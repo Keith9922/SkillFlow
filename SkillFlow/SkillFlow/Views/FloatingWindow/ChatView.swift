@@ -31,13 +31,29 @@ struct ChatView: View {
                             }
                         }
                         
-                        // Show progress if processing
+                        // Show detailed progress if processing
                         if viewModel.isProcessing {
-                            ProgressView(value: viewModel.parseProgress) {
-                                Text("解析中...")
-                                    .font(.caption)
-                            }
-                            .padding()
+                            StageProgressView(
+                                stageDetails: viewModel.stageDetails,
+                                currentProgress: viewModel.parseProgress
+                            )
+                            .padding(.horizontal)
+                            .transition(.opacity)
+                        }
+                        
+                        // Show error if present
+                        if let errorMessage = viewModel.errorMessage, !viewModel.isProcessing {
+                            ErrorView(
+                                errorMessage: errorMessage,
+                                onRetry: {
+                                    viewModel.retryParsing()
+                                },
+                                onDismiss: {
+                                    viewModel.errorMessage = nil
+                                }
+                            )
+                            .padding(.horizontal)
+                            .transition(.scale)
                         }
                     }
                     .padding(.vertical, 8)
