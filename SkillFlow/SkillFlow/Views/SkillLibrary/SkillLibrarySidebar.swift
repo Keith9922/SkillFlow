@@ -1,0 +1,210 @@
+//
+//  SkillLibrarySidebar.swift
+//  SkillFlow
+//
+//  Created by Ronggang on 2026/1/1.
+//
+
+import SwiftUI
+import SwiftData
+
+struct SkillLibrarySidebar: View {
+    @StateObject private var viewModel = SkillLibraryViewModel()
+    @Environment(\.modelContext) private var modelContext
+    @Binding var isShowing: Bool
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("技能库")
+                    .font(.headline)
+                
+                Spacer()
+                
+                Button(action: { isShowing = false }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding()
+            .background(VisualEffectBlur(material: .headerView, blendingMode: .behindWindow))
+            
+            // Search Bar
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                
+                TextField("搜索技能...", text: $viewModel.searchText)
+                    .textFieldStyle(.plain)
+                    .onChange(of: viewModel.searchText) { _, _ in
+                        viewModel.loadSkills()
+                    }
+                
+                if !viewModel.searchText.isEmpty {
+                    Button(action: { viewModel.searchText = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(8)
+            .background(Color.gray.opacity(0.1))
+            .cornerRadius(8)
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            
+            // Category Filter
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(viewModel.categories, id: \.self) { category in
+                        Button(action: {
+                            viewModel.selectedCategory = category
+                            viewModel.loadSkills()
+                        }) {
+                            Text(category)
+                                .font(.caption)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(
+                                    viewModel.selectedCategory == category ?
+                                    Color.blue : Color.gray.opacity(0.1)
+                                )
+                                .foregroundColor(
+                                    viewModel.selectedCategory == category ?
+                                    .white : .primary
+                                )
+                                .cornerRadius(12)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal)
+            }
+            .padding(.vertical, 8)
+            
+            Divider()
+            
+            // Skills List
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(viewModel.filteredSkills) { skill in
+                        SkillListItem(skill: skill) {
+                            // Insert skill reference into chat
+                            NotificationCenter.default.post(
+                                name: .insertSkillReference,
+                                object: nil,
+                                userInfo: ["skill": skill]
+                            )
+                            isShowing = false
+                        } onDelete: {
+                            viewModel.deleteSkill(skill)
+                        }
+                    }
+                }
+                .padding()
+            }
+            
+            Divider()
+            
+            // Footer
+            HStack {
+                Text("\(viewModel.skills.count) 个技能")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                Menu {
+                    Picker("排序", selection: $viewModel.sortBy) {
+                        ForEach(SortOption.allCases, id: \.self) { option in
+                            Text(option.rawValue).tag(option)
+                        }
+                    }
+                    .onChange(of: viewModel.sortBy) { _, _ in
+                        viewModel.loadSkills()
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .foregroundColor(.secondary)
+                }
+                .menuStyle(.borderlessButton)
+            }
+            .padding()
+            .background(VisualEffectBlur(material: .headerView, blendingMode: .behindWindow))
+        }
+        .frame(width: 300)
+        .background(VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow))
+        .onAppear {
+            viewModel.setModelContext(modelContext)
+        }
+    }
+}
+
+struct SkillListItem: View {
+    let skill: Skill
+    let onSelect: () -> Void
+    let onDelete: () -> Void
+    
+    @State private var isHovering = false
+    
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                // Icon
+                Image(systemName: "star.fill")
+                    .foregroundColor(.yellow)
+                    .font(.title3)
+                
+                // Info
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(skill.name)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    
+                    HStack(spacing: 8) {
+                        Text(skill.software)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        
+                        Text("•")
+                            .foregroundColor(.secondary)
+                        
+                        Text("\(skill.totalSteps) 步骤")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                Spacer()
+                
+                // Delete button (shown on hover)
+                if isHovering {
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .foregroundColor(.red)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isHovering ? Color.gray.opacity(0.1) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovering = hovering
+        }
+    }
+}
+
+// MARK: - Notifications
+
+extension Notification.Name {
+    static let insertSkillReference = Notification.Name("insertSkillReference")
+}
