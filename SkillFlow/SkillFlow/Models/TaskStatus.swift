@@ -8,6 +8,7 @@
 import Foundation
 
 enum TaskStatus: String, Codable {
+    case created
     case processing
     case audioDone = "audio_done"
     case videoDone = "video_done"
@@ -16,6 +17,8 @@ enum TaskStatus: String, Codable {
     
     var displayName: String {
         switch self {
+        case .created:
+            return "已创建"
         case .processing:
             return "处理中"
         case .audioDone:

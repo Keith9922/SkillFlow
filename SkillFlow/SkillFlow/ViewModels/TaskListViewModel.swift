@@ -8,6 +8,7 @@
 import Foundation
 import SwiftUI
 import SwiftData
+import Combine
 
 @MainActor
 class TaskListViewModel: ObservableObject {
@@ -35,8 +36,7 @@ class TaskListViewModel: ObservableObject {
         errorMessage = nil
         
         do {
-            let response = try await apiService.listTasks()
-            tasks = response.tasks
+            tasks = try await apiService.listTasks()
             isLoading = false
         } catch {
             isLoading = false
@@ -66,19 +66,19 @@ class TaskListViewModel: ObservableObject {
             // Load artifacts based on status
             if status == .audioDone || status == .videoDone || status == .finished {
                 if let audioArtifact = try? await apiService.getArtifact(entryId: entryId, track: .audio) {
-                    taskDetail.transcriptText = audioArtifact.data as? String
+                    taskDetail.transcriptText = try? dataConverter.convertAudioArtifact(audioArtifact)
                 }
             }
             
             if status == .videoDone || status == .finished {
                 if let videoArtifact = try? await apiService.getArtifact(entryId: entryId, track: .video) {
-                    taskDetail.videoAnalysis = try? dataConverter.convertVideoAnalysis(from: videoArtifact.data)
+                    taskDetail.videoAnalysis = try? dataConverter.convertVideoArtifact(videoArtifact)
                 }
             }
             
             if status == .finished {
                 if let stepsArtifact = try? await apiService.getArtifact(entryId: entryId, track: .steps) {
-                    taskDetail.skill = try? dataConverter.convertSkill(from: stepsArtifact.data)
+                    taskDetail.skill = try? dataConverter.convertStepsArtifact(stepsArtifact)
                 }
             }
             

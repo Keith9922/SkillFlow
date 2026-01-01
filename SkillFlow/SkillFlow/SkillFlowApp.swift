@@ -27,15 +27,15 @@ struct SkillFlowApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var floatingWindow: NSWindow?
-    var guideOverlayWindow: GuideOverlayWindow?
     var statusItem: NSStatusItem?
     
-    // ModelContainer 直接在 AppDelegate 中创建
+    // Lazy initialization for better startup performance
     lazy var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Skill.self,
             SkillStep.self,
-            Message.self
+            Message.self,
+            TaskEntry.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -47,39 +47,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Hide dock icon (optional - comment out if you want dock icon)
-        // NSApp.setActivationPolicy(.accessory)
-        
-        // Create status bar item
         setupStatusBar()
-        
-        // Setup permissions
-        checkPermissions()
-        
-        // Register global hotkey
-        HotKeyManager.shared.registerHotKey { [weak self] in
-            self?.toggleFloatingWindow()
-        }
-        
-        // Create floating window
+        registerHotKey()
         createFloatingWindow()
-        
-        // Listen for execution events
-        NotificationCenter.default.addObserver(
-            forName: .highlightElement,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.showGuideOverlay()
-        }
-        
-        NotificationCenter.default.addObserver(
-            forName: .hideHighlight,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.hideGuideOverlay()
-        }
     }
     
     func applicationWillTerminate(_ notification: Notification) {
@@ -92,7 +62,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "star.fill", accessibilityDescription: "SkillFlow")
+            // Use custom AppLogo from Assets
+            if let logo = NSImage(named: "AppLogo") {
+                logo.isTemplate = true // Makes it adapt to light/dark mode
+                button.image = logo
+            } else {
+                // Fallback to SF Symbol if logo not found
+                button.image = NSImage(systemSymbolName: "star.fill", accessibilityDescription: "SkillFlow")
+            }
             button.action = #selector(statusBarButtonClicked)
             button.target = self
         }
@@ -124,7 +101,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func createFloatingWindow() {
         let window = FloatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 600),
-            styleMask: [.borderless, .fullSizeContentView, .nonactivatingPanel],
+            styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -136,13 +113,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.isMovableByWindowBackground = true
         window.hidesOnDeactivate = false
         
-        // 使用自己的 ModelContainer
         let contentView = FloatingWindowView()
             .modelContainer(sharedModelContainer)
         
         window.contentView = NSHostingView(rootView: contentView)
         
-        // Center window
+        centerWindow(window)
+        
+        self.floatingWindow = window
+        window.orderFront(nil)
+    }
+    
+    private func centerWindow(_ window: NSWindow) {
         if let screen = NSScreen.main {
             let screenRect = screen.visibleFrame
             let windowRect = window.frame
@@ -150,11 +132,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let y = screenRect.midY - windowRect.height / 2
             window.setFrameOrigin(NSPoint(x: x, y: y))
         }
-        
-        self.floatingWindow = window
-        
-        // Show window initially
-        window.orderFront(nil)
     }
     
     @objc private func toggleFloatingWindow() {
@@ -168,45 +145,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    // MARK: - Guide Overlay
+    // MARK: - HotKey
     
-    private func showGuideOverlay() {
-        if guideOverlayWindow == nil {
-            guideOverlayWindow = GuideOverlayWindow()
-        }
-        
-        guideOverlayWindow?.makeKeyAndOrderFront(nil)
-    }
-    
-    private func hideGuideOverlay() {
-        guideOverlayWindow?.orderOut(nil)
-    }
-    
-    // MARK: - Permissions
-    
-    private func checkPermissions() {
-        let permissionManager = PermissionManager.shared
-        
-        if !permissionManager.allPermissionsGranted() {
-            // Show permission request alert
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                self.showPermissionAlert()
-            }
-        }
-    }
-    
-    private func showPermissionAlert() {
-        let alert = NSAlert()
-        alert.messageText = "需要权限"
-        alert.informativeText = "SkillFlow 需要辅助功能和屏幕录制权限才能正常工作。"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "打开系统偏好设置")
-        alert.addButton(withTitle: "稍后")
-        
-        let response = alert.runModal()
-        
-        if response == .alertFirstButtonReturn {
-            PermissionManager.shared.requestAccessibilityPermission()
+    private func registerHotKey() {
+        HotKeyManager.shared.registerHotKey { [weak self] in
+            self?.toggleFloatingWindow()
         }
     }
 }

@@ -42,7 +42,7 @@ struct TaskDetailView: View {
                     
                     // Content based on status
                     switch detail.status {
-                    case .processing, .audioDone, .videoDone:
+                    case .created, .processing, .audioDone, .videoDone:
                         ProcessingContent(detail: detail)
                         
                     case .finished:
@@ -95,6 +95,7 @@ struct StatusBadge: View {
     
     private var iconName: String {
         switch status {
+        case .created: return "doc.badge.plus"
         case .processing: return "hourglass"
         case .audioDone: return "waveform"
         case .videoDone: return "video"
@@ -105,6 +106,7 @@ struct StatusBadge: View {
     
     private var statusText: String {
         switch status {
+        case .created: return "已创建"
         case .processing: return "处理中"
         case .audioDone: return "音频完成"
         case .videoDone: return "视频完成"
@@ -115,6 +117,7 @@ struct StatusBadge: View {
     
     private var backgroundColor: Color {
         switch status {
+        case .created: return .gray
         case .processing: return .blue
         case .audioDone: return .cyan
         case .videoDone: return .purple
@@ -185,8 +188,8 @@ struct FinishedContent: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                     
-                    if !skill.description.isEmpty {
-                        Text(skill.description)
+                    if !skill.skillDescription.isEmpty {
+                        Text(skill.skillDescription)
                             .font(.body)
                             .padding(.top, 4)
                     }

@@ -40,7 +40,7 @@ class PollingManager {
     func pollUntil(
         entryId: String,
         targetStatus: TaskStatus,
-        onProgress: @escaping (TaskStatus) -> Void
+        onProgress: @escaping (TaskStatus, Int) -> Void
     ) async throws -> TaskStatus {
         var attempts = 0
         
@@ -51,7 +51,7 @@ class PollingManager {
             let currentStatus = try await apiService.getTaskStatus(entryId: entryId)
             
             // 回调进度
-            onProgress(currentStatus)
+            onProgress(currentStatus, attempts)
             
             // 检查是否达到目标状态
             if currentStatus == targetStatus {
@@ -80,7 +80,7 @@ class PollingManager {
     /// - Returns: 转录文本
     func pollForAudio(
         entryId: String,
-        onProgress: @escaping (TaskStatus) -> Void
+        onProgress: @escaping (TaskStatus, Int) -> Void
     ) async throws -> String {
         // 轮询直到 audio_done
         let finalStatus = try await pollUntil(
@@ -114,7 +114,7 @@ class PollingManager {
     /// - Returns: 视频分析数据
     func pollForVideo(
         entryId: String,
-        onProgress: @escaping (TaskStatus) -> Void
+        onProgress: @escaping (TaskStatus, Int) -> Void
     ) async throws -> VideoAnalysisData {
         // 轮询直到 video_done
         let finalStatus = try await pollUntil(
@@ -148,7 +148,7 @@ class PollingManager {
     /// - Returns: Skill 模型
     func pollForSteps(
         entryId: String,
-        onProgress: @escaping (TaskStatus) -> Void
+        onProgress: @escaping (TaskStatus, Int) -> Void
     ) async throws -> Skill {
         // 轮询直到 finished
         let finalStatus = try await pollUntil(

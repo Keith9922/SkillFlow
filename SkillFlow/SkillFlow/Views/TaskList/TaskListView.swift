@@ -101,6 +101,9 @@ struct TaskListRow: View {
     @ViewBuilder
     private var statusIcon: some View {
         switch task.status {
+        case .created:
+            Image(systemName: "doc.badge.plus")
+                .foregroundColor(.gray)
         case .processing:
             ProgressView()
                 .scaleEffect(0.8)
@@ -121,6 +124,8 @@ struct TaskListRow: View {
     
     private var statusText: String {
         switch task.status {
+        case .created:
+            return "已创建"
         case .processing:
             return "处理中"
         case .audioDone:

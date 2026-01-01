@@ -146,11 +146,19 @@ class SkillLibraryViewModel: ObservableObject {
             skill.tags = exportData.tags
             
             for stepData in exportData.steps {
+                // Convert string to enum
+                guard let actionType = ActionType(rawValue: stepData.actionType),
+                      let targetType = TargetType(rawValue: stepData.targetType) else {
+                    throw NSError(domain: "SkillImport", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "Invalid action or target type in step \(stepData.stepId)"
+                    ])
+                }
+                
                 let step = SkillStep(
                     stepId: stepData.stepId,
-                    actionType: stepData.actionType,
+                    actionType: actionType,
                     targetName: stepData.targetName,
-                    targetType: stepData.targetType,
+                    targetType: targetType,
                     instruction: stepData.instruction
                 )
                 step.waitAfter = stepData.waitAfter

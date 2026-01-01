@@ -41,9 +41,96 @@ class VideoDownloader {
         }
     }
     
-    /// 提取音频
+    /// 提取音频和处理视频
+    /// - Parameter videoPath: 视频文件路径
+    /// - Returns: (音频文件路径, 处理后的视频文件路径, GUID)
+    func extractAudioAndProcessVideo(from videoPath: URL) async throws -> (audioURL: URL, videoURL: URL, guid: String) {
+        // 生成唯一的 GUID
+        let guid = UUID().uuidString
+        
+        // 创建输出文件路径
+        let tempDir = fileManager.temporaryDirectory
+        let audioURL = tempDir.appendingPathComponent("\(guid).mp3")
+        let processedVideoURL = tempDir.appendingPathComponent("\(guid).mp4")
+        
+        // 使用 ffmpeg 提取音频
+        try await extractAudioWithFFmpeg(
+            from: videoPath,
+            to: audioURL
+        )
+        
+        // 使用 ffmpeg 处理视频（移除音频轨道）
+        try await processVideoWithFFmpeg(
+            from: videoPath,
+            to: processedVideoURL
+        )
+        
+        return (audioURL, processedVideoURL, guid)
+    }
+    
+    /// 使用 ffmpeg 提取音频
+    private func extractAudioWithFFmpeg(from videoPath: URL, to audioPath: URL) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/ffmpeg")
+        
+        // ffmpeg -i input.mp4 -vn -acodec libmp3lame -q:a 2 output.mp3
+        process.arguments = [
+            "-i", videoPath.path,
+            "-vn",  // 不包含视频
+            "-acodec", "libmp3lame",
+            "-q:a", "2",  // 音频质量
+            "-y",  // 覆盖输出文件
+            audioPath.path
+        ]
+        
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        
+        try process.run()
+        process.waitUntilExit()
+        
+        guard process.terminationStatus == 0 else {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            throw VideoDownloadError.exportFailed("FFmpeg audio extraction failed: \(errorMessage)")
+        }
+    }
+    
+    /// 使用 ffmpeg 处理视频（移除音频）
+    private func processVideoWithFFmpeg(from videoPath: URL, to outputPath: URL) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/ffmpeg")
+        
+        // ffmpeg -i input.mp4 -an -vcodec copy output.mp4
+        process.arguments = [
+            "-i", videoPath.path,
+            "-an",  // 不包含音频
+            "-vcodec", "copy",  // 复制视频编码（不重新编码）
+            "-y",  // 覆盖输出文件
+            outputPath.path
+        ]
+        
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        
+        try process.run()
+        process.waitUntilExit()
+        
+        guard process.terminationStatus == 0 else {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            throw VideoDownloadError.exportFailed("FFmpeg video processing failed: \(errorMessage)")
+        }
+    }
+    
+    /// 提取音频（保留旧方法以兼容）
     /// - Parameter videoPath: 视频文件路径
     /// - Returns: 音频文件路径
+    @available(*, deprecated, message: "Use extractAudioAndProcessVideo instead")
     func extractAudio(from videoPath: URL) async throws -> URL {
         let asset = AVAsset(url: videoPath)
         

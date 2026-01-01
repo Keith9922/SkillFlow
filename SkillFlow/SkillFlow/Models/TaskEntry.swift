@@ -1,5 +1,5 @@
 //
-//  Task.swift
+//  TaskEntry.swift
 //  SkillFlow
 //
 //  Created by SEEDO API Refactor on 2026/1/1.
@@ -9,7 +9,7 @@ import Foundation
 import SwiftData
 
 @Model
-final class Task {
+final class TaskEntry {
     @Attribute(.unique) var entryId: String
     var status: String // processing, audio_done, video_done, finished, failed
     var dirLocation: String

@@ -9,7 +9,7 @@
 import Foundation
 
 @MainActor
-class SEEDOAPIService: ObservableObject {
+class SEEDOAPIService {
     // MARK: - Singleton
     static let shared = SEEDOAPIService()
     
@@ -22,10 +22,10 @@ class SEEDOAPIService: ObservableObject {
     
     // MARK: - Initialization
     init(
-        baseURL: String = "http://localhost:8000",
+        baseURL: String? = nil,
         tokenManager: TokenManager = .shared
     ) {
-        self.baseURL = baseURL
+        self.baseURL = baseURL ?? APIConfiguration.shared.currentBaseURL
         self.tokenManager = tokenManager
         
         let config = URLSessionConfiguration.default
@@ -43,21 +43,21 @@ class SEEDOAPIService: ObservableObject {
     // MARK: - Task Management API
     
     /// 创建任务
-    /// - Parameter dirLocation: S3 存储位置
     /// - Returns: entryId
-    func createTask(dirLocation: String) async throws -> String {
+    func createTask() async throws -> String {
         struct Request: Encodable {
-            let dirLocation: String
+            // Empty request body
         }
         
         struct Response: Decodable {
             let entryId: String
+            let status: String
         }
         
         let response: Response = try await makeRequest(
             endpoint: "/v1/tasks/create",
             method: "POST",
-            body: Request(dirLocation: dirLocation)
+            body: Request()
         )
         
         return response.entryId
@@ -106,42 +106,42 @@ class SEEDOAPIService: ObservableObject {
     /// 提交音频解析
     /// - Parameters:
     ///   - entryId: 任务 ID
-    ///   - dirLocation: S3 存储位置
-    func parseAudio(entryId: String, dirLocation: String) async throws {
+    ///   - audioUrl: 音频文件 URL
+    func parseAudio(entryId: String, audioUrl: String) async throws {
         struct Request: Encodable {
             let entryId: String
-            let dirLocation: String
+            let audioUrl: String
         }
         
         struct Response: Decodable {
-            let message: String?
+            let status: String
         }
         
         let _: Response = try await makeRequest(
             endpoint: "/v1/parse/audio",
             method: "POST",
-            body: Request(entryId: entryId, dirLocation: dirLocation)
+            body: Request(entryId: entryId, audioUrl: audioUrl)
         )
     }
     
     /// 提交视频解析
     /// - Parameters:
     ///   - entryId: 任务 ID
-    ///   - dirLocation: S3 存储位置
+    ///   - videoUrl: 视频文件 URL
     ///   - transcriptText: 音频转录文本
     func parseVideo(
         entryId: String,
-        dirLocation: String,
+        videoUrl: String,
         transcriptText: String
     ) async throws {
         struct Request: Encodable {
             let entryId: String
-            let dirLocation: String
+            let videoUrl: String
             let transcriptText: String
         }
         
         struct Response: Decodable {
-            let message: String?
+            let status: String
         }
         
         let _: Response = try await makeRequest(
@@ -149,7 +149,7 @@ class SEEDOAPIService: ObservableObject {
             method: "POST",
             body: Request(
                 entryId: entryId,
-                dirLocation: dirLocation,
+                videoUrl: videoUrl,
                 transcriptText: transcriptText
             )
         )
@@ -276,13 +276,9 @@ class SEEDOAPIService: ObservableObject {
 
 struct TaskSummary: Codable, Identifiable {
     let entryId: String
-    let status: String
+    let status: TaskStatus
     
     var id: String { entryId }
-    
-    var taskStatus: TaskStatus? {
-        TaskStatus(rawValue: status)
-    }
 }
 
 // MARK: - SEEDO Error

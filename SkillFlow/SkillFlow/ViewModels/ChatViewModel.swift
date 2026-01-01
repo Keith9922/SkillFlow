@@ -52,9 +52,15 @@ class ChatViewModel: ObservableObject {
         self.tokenManager = tokenMgr
         self.apiService = apiSvc
         self.pollingManager = pollingManager ?? PollingManager(apiService: apiSvc)
+        
+        // 使用 APIConfiguration 中的 S3 配置
+        let config = APIConfiguration.shared
         self.s3Uploader = s3Uploader ?? S3Uploader(
-            bucket: "skillflow-videos",
-            region: "us-west-2"
+            endpoint: config.s3Endpoint,
+            bucket: config.s3Bucket,
+            accessKey: config.s3AccessKey,
+            secretKey: config.s3SecretKey,
+            region: config.s3Region
         )
         self.videoDownloader = videoDownloader ?? VideoDownloader()
         self.dataConverter = dataConverter ?? DataConverter()
@@ -154,6 +160,125 @@ class ChatViewModel: ObservableObject {
         }
     }
     
+    // MARK: - Process Local Video
+    
+    func processLocalVideo(url: URL) {
+        // Add user message
+        let userMessage = Message(content: "上传视频: \(url.lastPathComponent)", isUser: true)
+        addMessage(userMessage)
+        
+        isProcessing = true
+        parseProgress = 0
+        errorMessage = nil
+        initializeStageDetails()
+        
+        let botMessage = Message(content: "正在处理本地视频...", isUser: false)
+        addMessage(botMessage)
+        
+        Task {
+            do {
+                // Get access to the file
+                guard url.startAccessingSecurityScopedResource() else {
+                    throw NSError(domain: "FileAccess", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "无法访问文件"
+                    ])
+                }
+                defer { url.stopAccessingSecurityScopedResource() }
+                
+                // Skip download step since we already have the file
+                updateStage(.downloading, progress: 10, message: "本地文件已就绪")
+                markStageCompleted(.downloading)
+                
+                // Step 1: Extract audio and process video with ffmpeg
+                updateStage(.extractingAudio, progress: 15, message: "正在使用 ffmpeg 分离音视频...")
+                let (audioPath, processedVideoPath, guid) = try await videoDownloader.extractAudioAndProcessVideo(from: url)
+                markStageCompleted(.extractingAudio)
+                
+                // Step 2: Upload to S3
+                updateStage(.uploading, progress: 20, message: "正在上传文件...")
+                let dirLocation = "skillflow/\(guid)/"
+                
+                let videoData = try Data(contentsOf: processedVideoPath)
+                let audioData = try Data(contentsOf: audioPath)
+                
+                let videoS3Key = try await s3Uploader.upload(
+                    data: videoData,
+                    key: "\(dirLocation)\(guid).mp4",
+                    contentType: "video/mp4"
+                ) { progress in
+                    Task { @MainActor in
+                        self.updateStage(.uploading, progress: 20 + progress * 5, message: "上传视频 \(Int(progress * 100))%")
+                    }
+                }
+                
+                let audioS3Key = try await s3Uploader.upload(
+                    data: audioData,
+                    key: "\(dirLocation)\(guid).mp3",
+                    contentType: "audio/mpeg"
+                ) { progress in
+                    Task { @MainActor in
+                        self.updateStage(.uploading, progress: 25 + progress * 5, message: "上传音频 \(Int(progress * 100))%")
+                    }
+                }
+                markStageCompleted(.uploading)
+                
+                // Step 3: Create task
+                updateStage(.creatingTask, progress: 30, message: "正在创建任务...")
+                let entryId = try await apiService.createTask()
+                currentEntryId = entryId
+                markStageCompleted(.creatingTask)
+                
+                // Step 4: Parse audio
+                updateStage(.audioProcessing, progress: 35, message: "正在提交音频解析...")
+                try await apiService.parseAudio(entryId: entryId, audioUrl: audioS3Key)
+                
+                updateStage(.audioProcessing, progress: 40, message: "正在等待音频转录...")
+                let transcriptText = try await pollForAudio(entryId: entryId)
+                markStageCompleted(.audioProcessing)
+                
+                // Step 5: Parse video
+                updateStage(.videoProcessing, progress: 55, message: "正在提交视频分析...")
+                try await apiService.parseVideo(
+                    entryId: entryId,
+                    videoUrl: videoS3Key,
+                    transcriptText: transcriptText
+                )
+                
+                updateStage(.videoProcessing, progress: 60, message: "正在等待视频分析...")
+                _ = try await pollForVideo(entryId: entryId)
+                markStageCompleted(.videoProcessing)
+                
+                // Step 6: Generate steps
+                updateStage(.stepsGenerating, progress: 80, message: "正在生成操作步骤...")
+                let skill = try await pollForSteps(entryId: entryId)
+                markStageCompleted(.stepsGenerating)
+                
+                // Step 7: Complete
+                updateStage(.completed, progress: 100, message: "视频解析完成！技能已生成：\(skill.name)")
+                markStageCompleted(.completed)
+                
+                // Save skill
+                if let context = modelContext {
+                    context.insert(skill)
+                    try context.save()
+                }
+                
+                currentSkill = skill
+                isProcessing = false
+                
+                let successMessage = Message(content: "✅ 技能生成成功！", isUser: false)
+                addMessage(successMessage)
+                
+            } catch {
+                markStageFailed(.idle, error: "处理失败: \(error.localizedDescription)")
+                isProcessing = false
+                
+                let errorMsg = Message(content: "❌ 处理失败: \(error.localizedDescription)", isUser: false)
+                addMessage(errorMsg)
+            }
+        }
+    }
+    
     private func parseVideo(url: String) {
         isProcessing = true
         parseProgress = 0
@@ -174,21 +299,21 @@ class ChatViewModel: ObservableObject {
                 }
                 markStageCompleted(.downloading)
                 
-                // Step 2: Extract audio
-                updateStage(.extractingAudio, progress: 15, message: "正在提取音频...")
-                let audioPath = try await videoDownloader.extractAudio(from: videoPath)
+                // Step 2: Extract audio and process video with ffmpeg
+                updateStage(.extractingAudio, progress: 15, message: "正在使用 ffmpeg 分离音视频...")
+                let (audioPath, processedVideoPath, guid) = try await videoDownloader.extractAudioAndProcessVideo(from: videoPath)
                 markStageCompleted(.extractingAudio)
                 
                 // Step 3: Upload to S3
                 updateStage(.uploading, progress: 20, message: "正在上传文件...")
-                let dirLocation = "skillflow/\(UUID().uuidString)/"
+                let dirLocation = "skillflow/\(guid)/"
                 
-                let videoData = try Data(contentsOf: videoPath)
+                let videoData = try Data(contentsOf: processedVideoPath)
                 let audioData = try Data(contentsOf: audioPath)
                 
-                _ = try await s3Uploader.upload(
+                let videoS3Key = try await s3Uploader.upload(
                     data: videoData,
-                    key: "\(dirLocation)video.mp4",
+                    key: "\(dirLocation)\(guid).mp4",
                     contentType: "video/mp4"
                 ) { progress in
                     Task { @MainActor in
@@ -196,10 +321,10 @@ class ChatViewModel: ObservableObject {
                     }
                 }
                 
-                _ = try await s3Uploader.upload(
+                let audioS3Key = try await s3Uploader.upload(
                     data: audioData,
-                    key: "\(dirLocation)audio.wav",
-                    contentType: "audio/wav"
+                    key: "\(dirLocation)\(guid).mp3",
+                    contentType: "audio/mpeg"
                 ) { progress in
                     Task { @MainActor in
                         self.updateStage(.uploading, progress: 25 + progress * 5, message: "上传音频 \(Int(progress * 100))%")
@@ -209,13 +334,13 @@ class ChatViewModel: ObservableObject {
                 
                 // Step 4: Create task
                 updateStage(.creatingTask, progress: 30, message: "正在创建任务...")
-                let entryId = try await apiService.createTask(dirLocation: dirLocation)
+                let entryId = try await apiService.createTask()
                 currentEntryId = entryId
                 markStageCompleted(.creatingTask)
                 
                 // Step 5: Parse audio
                 updateStage(.audioProcessing, progress: 35, message: "正在提交音频解析...")
-                try await apiService.parseAudio(entryId: entryId, dirLocation: dirLocation)
+                try await apiService.parseAudio(entryId: entryId, audioUrl: audioS3Key)
                 
                 updateStage(.audioProcessing, progress: 40, message: "正在等待音频转录...")
                 let transcriptText = try await pollForAudio(entryId: entryId)
@@ -225,7 +350,7 @@ class ChatViewModel: ObservableObject {
                 updateStage(.videoProcessing, progress: 55, message: "正在提交视频分析...")
                 try await apiService.parseVideo(
                     entryId: entryId,
-                    dirLocation: dirLocation,
+                    videoUrl: videoS3Key,
                     transcriptText: transcriptText
                 )
                 
@@ -260,28 +385,28 @@ class ChatViewModel: ObservableObject {
     // MARK: - Polling Methods
     
     private func pollForAudio(entryId: String) async throws -> String {
-        return try await pollingManager.pollForAudio(entryId: entryId) { status in
+        return try await pollingManager.pollForAudio(entryId: entryId) { status, attempt in
             Task { @MainActor in
                 let progressValue = 40 + self.calculateStatusProgress(status) * 15
-                self.updateStage(.audioProcessing, progress: progressValue, message: "音频转录中... (\(status.rawValue))")
+                self.updateStage(.audioProcessing, progress: progressValue, message: "音频转录中... (\(status.rawValue)) [尝试 \(attempt)]")
             }
         }
     }
     
     private func pollForVideo(entryId: String) async throws -> VideoAnalysisData {
-        return try await pollingManager.pollForVideo(entryId: entryId) { status in
+        return try await pollingManager.pollForVideo(entryId: entryId) { status, attempt in
             Task { @MainActor in
                 let progressValue = 60 + self.calculateStatusProgress(status) * 20
-                self.updateStage(.videoProcessing, progress: progressValue, message: "视频分析中... (\(status.rawValue))")
+                self.updateStage(.videoProcessing, progress: progressValue, message: "视频分析中... (\(status.rawValue)) [尝试 \(attempt)]")
             }
         }
     }
     
     private func pollForSteps(entryId: String) async throws -> Skill {
-        return try await pollingManager.pollForSteps(entryId: entryId) { status in
+        return try await pollingManager.pollForSteps(entryId: entryId) { status, attempt in
             Task { @MainActor in
                 let progressValue = 80 + self.calculateStatusProgress(status) * 20
-                self.updateStage(.stepsGenerating, progress: progressValue, message: "生成步骤中... (\(status.rawValue))")
+                self.updateStage(.stepsGenerating, progress: progressValue, message: "生成步骤中... (\(status.rawValue)) [尝试 \(attempt)]")
             }
         }
     }
@@ -289,6 +414,8 @@ class ChatViewModel: ObservableObject {
     private func calculateStatusProgress(_ status: TaskStatus) -> Double {
         // Simple progress estimation based on status
         switch status {
+        case .created:
+            return 0.0
         case .processing:
             return 0.5
         case .audioDone, .videoDone, .finished:

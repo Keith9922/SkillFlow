@@ -14,11 +14,11 @@ struct StageDetail: Identifiable {
     let title: String
     let icon: String
     
-    init(stage: ParseStage, status: StageStatus = .pending) {
+    init(stage: ParseStage, status: StageStatus = .pending, title: String? = nil, icon: String? = nil) {
         self.stage = stage
         self.status = status
-        self.title = stage.displayName
-        self.icon = stage.icon
+        self.title = title ?? stage.displayName
+        self.icon = icon ?? stage.icon
     }
 }
 

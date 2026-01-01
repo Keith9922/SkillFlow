@@ -12,7 +12,9 @@ class DataConverter {
     // MARK: - Singleton
     static let shared = DataConverter()
     
-    private init() {}
+    private let validator = SkillValidator()
+    
+    init() {}
     
     // MARK: - Audio Data Conversion
     
@@ -69,13 +71,21 @@ class DataConverter {
         }
         
         // 提取基本信息
-        guard let name = dict["name"] as? String,
+        guard let skillId = dict["skill_id"] as? String,
+              let name = dict["name"] as? String,
               let software = dict["software"] as? String else {
             throw ConversionError.missingRequiredFields
         }
         
+        let version = dict["version"] as? String ?? "any"
         let description = dict["description"] as? String ?? ""
         let tags = dict["tags"] as? [String] ?? []
+        let sourceTypeStr = dict["source_type"] as? String ?? "video_analysis"
+        
+        // 验证 source_type
+        guard let sourceType = SourceType(rawValue: sourceTypeStr) else {
+            throw ConversionError.invalidDataFormat
+        }
         
         // 转换步骤数据
         guard let stepsArray = dict["steps"] as? [[String: Any]] else {
@@ -88,9 +98,12 @@ class DataConverter {
         
         // 创建 Skill 对象
         let skill = Skill(
+            skillId: skillId,
             name: name,
             software: software,
+            version: version,
             description: description,
+            sourceType: sourceType,
             steps: steps
         )
         
@@ -98,6 +111,13 @@ class DataConverter {
         skill.tags = tags
         skill.totalSteps = steps.count
         skill.estimatedDuration = steps.count * 3
+        
+        // 验证转换后的 Skill
+        do {
+            try validator.validate(skill: skill)
+        } catch {
+            throw ConversionError.validationFailed(error.localizedDescription)
+        }
         
         return skill
     }
@@ -107,14 +127,24 @@ class DataConverter {
     /// 转换单个步骤数据
     private func convertStepData(_ dict: [String: Any]) throws -> SkillStep {
         guard let stepId = dict["step_id"] as? Int,
-              let actionType = dict["action_type"] as? String,
+              let actionTypeStr = dict["action_type"] as? String,
               let targetDict = dict["target"] as? [String: Any],
               let targetName = targetDict["name"] as? String,
               let instruction = dict["instruction"] as? String else {
             throw ConversionError.invalidStepData
         }
         
-        let targetType = targetDict["type"] as? String ?? "button"
+        // 验证 action_type
+        guard let actionType = ActionType(rawValue: actionTypeStr) else {
+            throw ConversionError.invalidDataFormat
+        }
+        
+        let targetTypeStr = targetDict["type"] as? String ?? "button"
+        
+        // 验证 target_type
+        guard let targetType = TargetType(rawValue: targetTypeStr) else {
+            throw ConversionError.invalidDataFormat
+        }
         
         // 创建 SkillStep 对象
         let step = SkillStep(
@@ -132,6 +162,12 @@ class DataConverter {
         
         if let confidence = dict["confidence"] as? Double {
             step.confidence = confidence
+        }
+        
+        // 转换 parameters 数据
+        if let parameters = dict["parameters"] {
+            let parametersData = try JSONSerialization.data(withJSONObject: parameters)
+            step.parametersData = parametersData
         }
         
         // 转换 locators 数据
@@ -196,6 +232,7 @@ enum ConversionError: Error, LocalizedError {
     case missingRequiredFields
     case invalidStepData
     case jsonSerializationFailed
+    case validationFailed(String)
     
     var errorDescription: String? {
         switch self {
@@ -209,6 +246,8 @@ enum ConversionError: Error, LocalizedError {
             return "无效的步骤数据"
         case .jsonSerializationFailed:
             return "JSON 序列化失败"
+        case .validationFailed(let message):
+            return "数据验证失败: \(message)"
         }
     }
 }

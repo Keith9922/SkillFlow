@@ -68,6 +68,24 @@ class APIConfiguration: ObservableObject {
         }
     }
     
+    @Published var s3Endpoint: String {
+        didSet {
+            saveConfiguration()
+        }
+    }
+    
+    @Published var s3AccessKey: String {
+        didSet {
+            saveConfiguration()
+        }
+    }
+    
+    @Published var s3SecretKey: String {
+        didSet {
+            saveConfiguration()
+        }
+    }
+    
     // MARK: - UserDefaults Keys
     
     private let versionKey = "api.version"
@@ -75,6 +93,9 @@ class APIConfiguration: ObservableObject {
     private let legacyBaseURLKey = "api.legacy.baseURL"
     private let s3BucketKey = "api.s3.bucket"
     private let s3RegionKey = "api.s3.region"
+    private let s3EndpointKey = "api.s3.endpoint"
+    private let s3AccessKeyKey = "api.s3.accessKey"
+    private let s3SecretKeyKey = "api.s3.secretKey"
     
     // MARK: - Initialization
     
@@ -89,13 +110,19 @@ class APIConfiguration: ObservableObject {
         }
         
         self.seedoBaseURL = UserDefaults.standard.string(forKey: seedoBaseURLKey) 
-            ?? "https://api.seedo.example.com"
+            ?? "https://api.sf.smart-teach.cn"
         self.legacyBaseURL = UserDefaults.standard.string(forKey: legacyBaseURLKey) 
-            ?? "http://localhost:8000"
+            ?? "https://api.sf.smart-teach.cn"
         self.s3Bucket = UserDefaults.standard.string(forKey: s3BucketKey) 
-            ?? "skillflow-videos"
+            ?? "skillflow"
         self.s3Region = UserDefaults.standard.string(forKey: s3RegionKey) 
-            ?? "us-west-2"
+            ?? "cn-nb1"
+        self.s3Endpoint = UserDefaults.standard.string(forKey: s3EndpointKey) 
+            ?? "https://cn-nb1.rains3.com"
+        self.s3AccessKey = UserDefaults.standard.string(forKey: s3AccessKeyKey) 
+            ?? "HNZpHzoyiMuT9qA3"
+        self.s3SecretKey = UserDefaults.standard.string(forKey: s3SecretKeyKey) 
+            ?? "NUa9JAKto0OOaBYANgUkCsYO4bY54t"
     }
     
     // MARK: - Configuration Management
@@ -107,6 +134,9 @@ class APIConfiguration: ObservableObject {
         UserDefaults.standard.set(legacyBaseURL, forKey: legacyBaseURLKey)
         UserDefaults.standard.set(s3Bucket, forKey: s3BucketKey)
         UserDefaults.standard.set(s3Region, forKey: s3RegionKey)
+        UserDefaults.standard.set(s3Endpoint, forKey: s3EndpointKey)
+        UserDefaults.standard.set(s3AccessKey, forKey: s3AccessKeyKey)
+        UserDefaults.standard.set(s3SecretKey, forKey: s3SecretKeyKey)
     }
     
     /// 切换到指定版本
@@ -124,10 +154,13 @@ class APIConfiguration: ObservableObject {
     /// 重置为默认配置
     func resetToDefaults() {
         currentVersion = .seedo
-        seedoBaseURL = "https://api.seedo.example.com"
-        legacyBaseURL = "http://localhost:8000"
-        s3Bucket = "skillflow-videos"
-        s3Region = "us-west-2"
+        seedoBaseURL = "https://api.sf.smart-teach.cn"
+        legacyBaseURL = "https://api.sf.smart-teach.cn"
+        s3Bucket = "skillflow"
+        s3Region = "cn-nb1"
+        s3Endpoint = "https://cn-nb1.rains3.com"
+        s3AccessKey = "HNZpHzoyiMuT9qA3"
+        s3SecretKey = "NUa9JAKto0OOaBYANgUkCsYO4bY54t"
     }
     
     /// 验证配置是否有效
@@ -143,6 +176,10 @@ class APIConfiguration: ObservableObject {
             errors.append("旧版 API URL 格式无效")
         }
         
+        if URL(string: s3Endpoint) == nil {
+            errors.append("S3 Endpoint URL 格式无效")
+        }
+        
         // 验证 S3 配置
         if s3Bucket.isEmpty {
             errors.append("S3 Bucket 不能为空")
@@ -150,6 +187,14 @@ class APIConfiguration: ObservableObject {
         
         if s3Region.isEmpty {
             errors.append("S3 Region 不能为空")
+        }
+        
+        if s3AccessKey.isEmpty {
+            errors.append("S3 Access Key 不能为空")
+        }
+        
+        if s3SecretKey.isEmpty {
+            errors.append("S3 Secret Key 不能为空")
         }
         
         return errors
