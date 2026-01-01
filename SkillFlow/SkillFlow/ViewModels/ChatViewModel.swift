@@ -42,9 +42,13 @@ class ChatViewModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
+            guard let self = self else { return }
+            
+            // Extract data from notification safely
+            let userInfo = notification.userInfo
+            
             Task { @MainActor in
-                guard let self = self,
-                      let skill = notification.userInfo?["skill"] as? Skill else { return }
+                guard let skill = userInfo?["skill"] as? Skill else { return }
                 self.insertSkillReference(skill)
             }
         }
@@ -105,50 +109,116 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Send Message
+    // MARK: - Message Handling
+    
+    private var currentTask: Task<Void, Never>?
     
     func sendMessage() {
         guard !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
-        let userMessage = Message(content: inputText, isUser: true)
-        addMessage(userMessage)
-        
-        let userInput = inputText
+        let input = inputText
         inputText = ""
         
-        // Check if it's a video URL
-        if isVideoURL(userInput) {
-            parseVideo(url: userInput)
-        } else if userInput.contains("@") {
-            // Skill invocation
-            handleSkillInvocation(userInput)
+        // Add user message
+        let userMessage = Message(content: input, isUser: true)
+        addMessage(userMessage)
+        
+        // Check for skill invocation
+        if input.contains("[SKILL:") || input.contains("@") {
+            handleSkillInvocation(input)
         } else {
-            // Regular chat
-            handleRegularChat(userInput)
+            handleRegularChat(input)
+        }
+    }
+    
+    func stopProcessing() {
+        currentTask?.cancel()
+        currentTask = nil
+        isProcessing = false
+        // Optionally add a system message indicating cancellation
+        // let msg = Message(content: "🛑 操作已取消", isUser: false)
+        // addMessage(msg)
+    }
+    
+    func clearContext() {
+        messages.removeAll()
+        try? modelContext?.delete(model: Message.self) // Clear from DB if needed, or just memory
+        // Re-save context to persist deletion if using SwiftData for persistence
+        try? modelContext?.save()
+        errorMessage = nil
+        isProcessing = false
+        stageDetails = []
+        parseProgress = 0
+    }
+    
+    private func handleRegularChat(_ input: String) {
+        // Show "thinking" state
+        isProcessing = true
+        
+        // Add a placeholder bot message
+        let botMessage = Message(content: "...", isUser: false)
+        let tempId = botMessage.id
+        addMessage(botMessage)
+        
+        currentTask = Task {
+            await AssistantService.shared.handleUserMessage(text: input, history: messages) { [weak self] responseText, isComplete in
+                Task { @MainActor in
+                    guard let self = self else { return }
+                    
+                    if Task.isCancelled { return }
+                    
+                    // Find and update the placeholder message
+                    if let index = self.messages.firstIndex(where: { $0.id == tempId }) {
+                        self.messages[index].content = responseText
+                        try? self.modelContext?.save()
+                    }
+                    
+                    if isComplete {
+                        self.isProcessing = false
+                        self.currentTask = nil
+                    }
+                }
+            }
         }
     }
     
     // MARK: - Skill Invocation
     
     private func insertSkillReference(_ skill: Skill) {
-        // Append @SkillName to input text
+        // Append [SKILL: Skill Name] to input text
+        // This format avoids issues with spaces in skill names
         if inputText.isEmpty {
-            inputText = "@\(skill.name) "
+            inputText = "[SKILL: \(skill.name)]"
         } else {
-            inputText += " @\(skill.name) "
+            inputText += " [SKILL: \(skill.name)]"
         }
     }
     
     private func handleSkillInvocation(_ input: String) {
-        // Extract skill name from input (e.g. "@Photoshop Crop ...")
-        // Simple parsing: find @, take until space or end
-        let components = input.components(separatedBy: " ")
+        // Extract skill name from input using regex for [SKILL: Name]
+        // This allows skill names to contain spaces
         var skillName: String?
         
-        for component in components {
-            if component.hasPrefix("@") {
-                skillName = String(component.dropFirst())
-                break
+        // Regex to match [SKILL: <Anything>]
+        let pattern = "\\[SKILL:\\s*(.*?)\\]"
+        
+        if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+            let nsString = input as NSString
+            let results = regex.matches(in: input, options: [], range: NSRange(location: 0, length: nsString.length))
+            
+            if let match = results.first, match.numberOfRanges > 1 {
+                skillName = nsString.substring(with: match.range(at: 1))
+            }
+        }
+        
+        // Fallback to legacy @ parsing if new format not found
+        if skillName == nil {
+            let components = input.components(separatedBy: " ")
+            for component in components {
+                if component.hasPrefix("@") {
+                    skillName = String(component.dropFirst())
+                    break
+                }
             }
         }
         
@@ -175,13 +245,41 @@ class ChatViewModel: ObservableObject {
                 if let packageData = skill.packageData {
                     response.skillData = packageData // Store raw package data or customized card data
                 }
+                let tempId = response.id
                 addMessage(response)
                 
-                // Simulate execution delay
+                // Execute Skill using AssistantService (VLM driven)
+                isProcessing = true
                 Task {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    let completionMsg = Message(content: "✅ 技能 \(skill.name) 执行完成", isUser: false)
-                    addMessage(completionMsg)
+                    do {
+                        try await AssistantService.shared.executeSkillWithVLM(
+                            skill: skill,
+                            onProgress: { [weak self] status in
+                                Task { @MainActor in
+                                    guard let self = self else { return }
+                                    // Append new message for progress
+                                    let progressMsg = Message(content: status, isUser: false)
+                                    self.addMessage(progressMsg)
+                                }
+                            },
+                            onComplete: { [weak self] summary in
+                                Task { @MainActor in
+                                    guard let self = self else { return }
+                                    // Append final summary
+                                    let summaryMsg = Message(content: summary, isUser: false)
+                                    self.addMessage(summaryMsg)
+                                    self.isProcessing = false
+                                }
+                            }
+                        )
+                    } catch {
+                        Task { @MainActor in
+                            guard let self = self else { return }
+                            let errorMsg = Message(content: "❌ 技能执行失败: \(error.localizedDescription)", isUser: false)
+                            self.addMessage(errorMsg)
+                            self.isProcessing = false
+                        }
+                    }
                 }
                 
             } else {
@@ -474,37 +572,7 @@ class ChatViewModel: ObservableObject {
         print("Retry parsing (Logic removed)")
     }
     
-    private func handleRegularChat(_ input: String) {
-        // Show "thinking" state
-        isProcessing = true
-        
-        // Add a placeholder bot message
-        let botMessage = Message(content: "...", isUser: false)
-        let tempId = botMessage.id
-        addMessage(botMessage)
-        
-        Task {
-            await AssistantService.shared.handleUserMessage(text: input, history: messages) { [weak self] responseText, isComplete in
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    
-                    // Find and update the placeholder message
-                    if let index = self.messages.firstIndex(where: { $0.id == tempId }) {
-                        self.messages[index].content = responseText
-                        
-                        // Save to DB
-                        if let context = self.modelContext {
-                            try? context.save()
-                        }
-                    }
-                    
-                    if isComplete {
-                        self.isProcessing = false
-                    }
-                }
-            }
-        }
-    }
+
     
     // MARK: - Helper Methods
     

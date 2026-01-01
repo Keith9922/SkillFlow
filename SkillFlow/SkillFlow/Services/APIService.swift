@@ -402,6 +402,99 @@ class APIService {
         }
     }
     
+    /// 调用 GLM-4V 执行具体的 Skill Step
+    /// - Parameters:
+    ///   - step: 当前的技能步骤
+    ///   - imageData: 屏幕截图
+    /// - Returns: VLMTaskResponse
+    func executeSkillStepWithVLM(step: SkillStep, imageData: Data) async throws -> VLMTaskResponse {
+        let urlString = "https://api.siliconflow.cn/v1/chat/completions"
+        guard let url = URL(string: urlString) else { throw APIError.invalidURL }
+        
+        var locatorsDesc = "None"
+        if let locatorsData = step.locatorsData,
+           let locators = try? JSONDecoder().decode([Locator].self, from: locatorsData) {
+            locatorsDesc = locators.map { "\($0.method.rawValue): \($0.value.value)" }.joined(separator: ", ")
+        }
+        
+        let systemPrompt = """
+        You are a macOS GUI Automation Expert. Your task is to execute a specific step from a predefined skill.
+        
+        CURRENT STEP INSTRUCTION:
+        "\(step.instruction)"
+        
+        TARGET ELEMENT:
+        Name: \(step.targetName)
+        Type: \(step.targetType)
+        Locators: \(locatorsDesc)
+        
+        YOUR GOAL:
+        Analyze the screenshot, find the target element described above, and generate a JSON task queue to interact with it.
+        
+        COORDINATE SYSTEM:
+        - Normalized coordinates: (0, 0) is TOP-LEFT, (1, 1) is BOTTOM-RIGHT.
+        
+        AVAILABLE TOOLS:
+        - move_mouse, click, mouse_down/up, paste_text, key_press, delay, finish
+        (Same format as standard automation)
+        
+        OUTPUT FORMAT:
+        JSON object with "thought" and "tasks".
+        
+        IMPORTANT:
+        - If you find the element, generate actions to interact with it (e.g., click).
+        - If the element is NOT found, or the state is wrong, output "action": "fail".
+        - Use the provided locators as hints, but trust your vision.
+        """
+        
+        let base64Image = imageData.base64EncodedString()
+        
+        let messages: [[String: Any]] = [
+            [
+                "role": "system",
+                "content": systemPrompt
+            ],
+            [
+                "role": "user",
+                "content": [
+                    [
+                        "type": "image_url",
+                        "image_url": [
+                            "url": "data:image/jpeg;base64,\(base64Image)"
+                        ]
+                    ]
+                ]
+            ]
+        ]
+        
+        let payload: [String: Any] = [
+            "model": SiliconFlowConfig.glmModel,
+            "messages": messages,
+            "temperature": 0.1,
+            "top_p": 0.1,
+            "max_tokens": 1024,
+            "enable_thinking": false
+        ]
+        
+        // Reuse the parsing logic from executeVLMTask
+        let responseContent = try await performSiliconFlowRequest(url: url, payload: payload)
+        
+        // Clean and parse
+        var cleanContent = responseContent
+        if cleanContent.contains("```json") {
+            cleanContent = cleanContent.replacingOccurrences(of: "```json", with: "")
+            cleanContent = cleanContent.replacingOccurrences(of: "```", with: "")
+        }
+        cleanContent = cleanContent.replacingOccurrences(of: "<|begin_of_box|>", with: "")
+        cleanContent = cleanContent.replacingOccurrences(of: "<|end_of_box|>", with: "")
+        
+        guard let data = cleanContent.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8) else {
+            throw APIError.decodingFailed(NSError(domain: "APIService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Empty response content"]))
+        }
+        
+        return try JSONDecoder().decode(VLMTaskResponse.self, from: data)
+    }
+    
     private func performSiliconFlowRequest(url: URL, payload: [String: Any]) async throws -> String {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

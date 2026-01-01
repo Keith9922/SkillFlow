@@ -118,6 +118,8 @@ struct ChatView: View {
             InputBar(
                 text: $viewModel.inputText,
                 onSend: viewModel.sendMessage,
+                onStop: viewModel.stopProcessing,
+                onClear: viewModel.clearContext,
                 onFileSelect: { url in
                     viewModel.processLocalVideo(url: url)
                 },

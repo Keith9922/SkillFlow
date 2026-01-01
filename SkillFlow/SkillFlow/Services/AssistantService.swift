@@ -208,6 +208,127 @@ class AssistantService {
         throw NSError(domain: "AssistantService", code: -1, userInfo: [NSLocalizedDescriptionKey: "达到最大步骤限制 (\(maxSteps))，停止执行"])
     }
     
+    // MARK: - Skill Execution
+    
+    /// 执行预定义的技能 (VLM 驱动)
+    /// - Parameters:
+    ///   - skill: 要执行的技能
+    ///   - onProgress: 进度回调
+    ///   - onComplete: 完成回调
+    func executeSkillWithVLM(skill: Skill, onProgress: @escaping (String) -> Void, onComplete: @escaping (String) -> Void) async throws {
+        
+        onProgress("🚀 开始执行技能: \(skill.name)\n包含 \(skill.steps.count) 个步骤")
+        
+        for (index, step) in skill.steps.enumerated() {
+            onProgress("📍 [步骤 \(index + 1)/\(skill.steps.count)] \(step.instruction)")
+            
+            // 1. 截图
+            guard let screenData = await ScreenCaptureService.shared.captureMainScreen() else {
+                throw NSError(domain: "AssistantService", code: -1, userInfo: [NSLocalizedDescriptionKey: "无法截取屏幕"])
+            }
+            
+            // 2. 调用 VLM 确认操作细节
+            onProgress("👀 正在分析屏幕以定位目标: \(step.targetName)...")
+            let vlmResponse = try await APIService.shared.executeSkillStepWithVLM(step: step, imageData: screenData)
+            
+            onProgress("🧠 思考: \(vlmResponse.thought)\n⚡️ 执行动作...")
+            
+            // 3. 执行 VLM 生成的具体操作
+            // 这里复用 performAutomation 中的执行逻辑，但需要适配一下参数传递
+            // 为了避免代码重复，我们把执行逻辑提取出来，或者直接在这里处理
+            try await executeVLMTasks(vlmResponse.tasks, onProgress: onProgress)
+            
+            // 4. 验证当前步骤 (Validate)
+            onProgress("🔍 验证步骤 \(index + 1) 结果...")
+            // 验证时使用当前步骤的 instruction 作为 goal
+            guard let validationScreen = await ScreenCaptureService.shared.captureMainScreen() else { continue }
+            
+            let validation = try await APIService.shared.validateTaskOutcome(originalGoal: step.instruction, imageData: validationScreen)
+            
+            if validation.success {
+                onProgress("✅ 步骤 \(index + 1) 验证通过")
+            } else {
+                // 如果验证失败，尝试重试一次 (简单逻辑：用 validation 的建议重试)
+                if let nextPrompt = validation.nextPrompt {
+                    onProgress("⚠️ 步骤验证失败: \(validation.summary)\n🔄 尝试修正: \(nextPrompt)")
+                    
+                    // 构造一个临时的 SkillStep 进行重试
+                    // 这里的逻辑可以更复杂，比如递归调用 VLM，这里简化为单次修正
+                    try await performAutomation(intent: nextPrompt, onProgress: onProgress, onComplete: { _ in })
+                } else {
+                    throw NSError(domain: "AssistantService", code: -1, userInfo: [NSLocalizedDescriptionKey: "步骤 \(index + 1) 执行失败且无法修正: \(validation.summary)"])
+                }
+            }
+            
+            // 步骤间延迟
+            if step.waitAfter > 0 {
+                onProgress("⏳ 等待 \(step.waitAfter) 秒...")
+                try await Task.sleep(nanoseconds: UInt64(step.waitAfter * 1_000_000_000))
+            }
+        }
+        
+        onComplete("🎉 技能 \(skill.name) 执行完成！")
+    }
+    
+    // 提取公共的 Task 执行逻辑
+    private func executeVLMTasks(_ tasks: [AutomationTask], onProgress: @escaping (String) -> Void) async throws {
+        let inputService = InputControlService.shared
+        
+        for task in tasks {
+            // ... (Copy switch logic from performAutomation or refactor)
+            // 为了简洁，这里快速复刻一份 switch 逻辑，理想情况应提取为 InputService 的扩展或单独的 Executor
+            
+            switch task.action {
+            case .moveMouse:
+                if let x = task.params?.x, let y = task.params?.y {
+                    let screenFrame = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+                    let pixelX = x * screenFrame.width
+                    let pixelY = y * screenFrame.height
+                    let duration = task.params?.duration ?? 500
+                    await inputService.smooth_move_mouse(x: pixelX, y: pixelY, durationMs: duration)
+                }
+            case .click:
+                let buttonStr = task.params?.button ?? "left"
+                let button: MouseButton = (buttonStr == "right") ? .right : .left
+                await inputService.mouse_down(button: button)
+                await inputService.delay(100)
+                await inputService.mouse_up(button: button)
+            case .mouseDown:
+                let buttonStr = task.params?.button ?? "left"
+                let button: MouseButton = (buttonStr == "right") ? .right : .left
+                await inputService.mouse_down(button: button)
+            case .mouseUp:
+                let buttonStr = task.params?.button ?? "left"
+                let button: MouseButton = (buttonStr == "right") ? .right : .left
+                await inputService.mouse_up(button: button)
+            case .keyPress:
+                if let keyStr = task.params?.key, let key = mapKey(keyStr) {
+                    await inputService.key_press(key: key)
+                }
+            case .keyRelease:
+                if let keyStr = task.params?.key, let key = mapKey(keyStr) {
+                    await inputService.key_release(key: key)
+                }
+            case .type, .pasteText:
+                if let text = task.params?.text {
+                    await inputService.paste_text(text)
+                }
+            case .delay:
+                let ms = task.params?.duration ?? 500
+                await inputService.delay(ms)
+            case .allRelease:
+                await inputService.all_release()
+            case .resubmit, .finish:
+                break // Skill execution handles flow differently
+            case .fail:
+                throw NSError(domain: "AssistantService", code: -1, userInfo: [NSLocalizedDescriptionKey: "模型反馈无法完成步骤"])
+            }
+            
+            await inputService.delay(200)
+        }
+        await inputService.all_release()
+    }
+
     // MARK: - Helpers
     
     /// 解析 Kimi 返回的 [OPERATE: ...] 标记

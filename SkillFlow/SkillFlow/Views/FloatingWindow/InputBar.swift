@@ -12,6 +12,8 @@ import SwiftData
 struct InputBar: View {
     @Binding var text: String
     let onSend: () -> Void
+    let onStop: () -> Void
+    let onClear: () -> Void
     let onFileSelect: (URL) -> Void
     let isProcessing: Bool
     
@@ -71,6 +73,18 @@ struct InputBar: View {
             }
             
             HStack(spacing: 8) {
+                // Clear Context Button
+                Button(action: onClear) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 16))
+                        .foregroundColor(.secondary)
+                        .frame(width: 32, height: 32)
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(8)
+                }
+                .buttonStyle(.plain)
+                .help("清除上下文")
+                
                 // File Upload Button
                 Button(action: { showingFilePicker.toggle() }) {
                     Image(systemName: "video.badge.plus")
@@ -127,11 +141,17 @@ struct InputBar: View {
                         }
                     }
                 
-                // Send Button
-                Button(action: onSend) {
+                // Send / Stop Button
+                Button(action: {
+                    if isProcessing {
+                        onStop()
+                    } else {
+                        onSend()
+                    }
+                }) {
                     Image(systemName: isProcessing ? "stop.circle.fill" : "arrow.up.circle.fill")
                         .font(.system(size: 24))
-                        .foregroundColor(text.isEmpty && !isProcessing ? .gray : .blue)
+                        .foregroundColor(isProcessing ? .red : (text.isEmpty ? .gray : .blue))
                 }
                 .buttonStyle(.plain)
                 .disabled(text.isEmpty && !isProcessing)
@@ -151,7 +171,7 @@ struct InputBar: View {
         if let atIndex = input.lastIndex(of: "@") {
             let suffix = input[atIndex...].dropFirst() // Text after @
             // If there's a space after @, likely not searching anymore or search term ended
-            if suffix.contains(" ") {
+            if suffix.contains("]") { // If closed with bracket, stop searching
                 showSkillSuggestions = false
                 return
             }
@@ -178,10 +198,11 @@ struct InputBar: View {
     private func selectSkill(_ skill: Skill) {
         if let atIndex = text.lastIndex(of: "@") {
             let prefix = text[..<atIndex]
-            text = String(prefix) + "@" + skill.name + " "
+            // Use new format [SKILL: Name]
+            text = String(prefix) + "[SKILL: " + skill.name + "] "
         } else {
             // Fallback
-            text += "@" + skill.name + " "
+            text += "[SKILL: " + skill.name + "] "
         }
         showSkillSuggestions = false
     }
