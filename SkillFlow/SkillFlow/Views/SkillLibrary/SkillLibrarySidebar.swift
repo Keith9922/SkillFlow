@@ -7,12 +7,14 @@
 
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 struct SkillLibrarySidebar: View {
     @StateObject private var viewModel = SkillLibraryViewModel()
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Skill.createdAt, order: .reverse) private var allSkills: [Skill]
     @Binding var isShowing: Bool
+    @State private var isImporting = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -134,6 +136,12 @@ struct SkillLibrarySidebar: View {
                     Button("添加测试数据") {
                         viewModel.addSampleData()
                     }
+                    
+                    Divider()
+                    
+                    Button("导入技能 (JSON)...") {
+                        isImporting = true
+                    }
                 } label: {
                     Image(systemName: "arrow.up.arrow.down")
                         .foregroundColor(.secondary)
@@ -147,6 +155,20 @@ struct SkillLibrarySidebar: View {
         .background(VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow))
         .onAppear {
             viewModel.setModelContext(modelContext)
+        }
+        .fileImporter(
+            isPresented: $isImporting,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    viewModel.importSkill(from: url)
+                }
+            case .failure(let error):
+                print("File import failed: \(error.localizedDescription)")
+            }
         }
     }
 }

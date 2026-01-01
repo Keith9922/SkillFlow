@@ -1,0 +1,114 @@
+{
+  "version": "1.0",
+  "package": {
+    "name": "PS 证件照换底色",
+    "createdAt": "2024-01-02T10:00:00Z",
+    "description": "自动将 Photoshop 中当前选中的证件照背景替换为白色",
+    "author": "SkillFlow User",
+    "tags": ["图像处理", "Photoshop", "证件照"]
+  },
+  "app": {
+    "name": "Photoshop",
+    "minVersion": "2023",
+    "maxVersion": null
+  },
+  "steps": [
+    {
+      "op": "click",
+      "name": "点击图层面板",
+      "target": {
+        "strategy": "ocr",
+        "text": "图层",
+        "match": {
+          "mode": "contains"
+        }
+      }
+    },
+    {
+      "op": "click",
+      "name": "点击选择菜单",
+      "target": {
+        "strategy": "ocr",
+        "text": "选择",
+        "match": {
+          "mode": "equals"
+        }
+      }
+    },
+    {
+      "op": "click",
+      "name": "点击主体",
+      "target": {
+        "strategy": "ocr",
+        "text": "主体",
+        "match": {
+          "mode": "contains"
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "name": "等待主体选择完成",
+      "until": {
+          "strategy": "template",
+          "template": "selection_marching_ants"
+      },
+      "params": {
+          "mode": "appear",
+          "minConfidence": 0.6
+      }
+    },
+    {
+      "op": "hotkey",
+      "name": "反选选区",
+      "keys": ["command", "shift", "i"]
+    },
+    {
+      "op": "click",
+      "name": "选择油漆桶工具",
+      "target": {
+        "strategy": "ocr",
+        "text": "油漆桶工具",
+         "match": {
+          "mode": "contains"
+        }
+      }
+    },
+    {
+      "op": "click",
+      "name": "设置前景色为白色",
+      "target": {
+        "strategy": "ocr",
+        "text": "默认前景色和背景色", 
+        "match": {
+             "mode": "contains"
+        }
+      }
+    },
+     {
+      "op": "hotkey",
+      "name": "切换前景色背景色(确保白)",
+      "keys": ["x"]
+    },
+    {
+      "op": "click",
+      "name": "点击背景填充白色",
+      "target": {
+         "strategy": "relative",
+         "anchor": {
+             "strategy": "ocr",
+             "text": "主体",
+             "match": { "mode": "contains" }
+         },
+         "relation": {
+             "type": "near",
+             "maxDistancePx": 500
+         },
+         "target": {
+             "strategy": "template",
+             "template": "background_area"
+         }
+      }
+    }
+  ]
+}

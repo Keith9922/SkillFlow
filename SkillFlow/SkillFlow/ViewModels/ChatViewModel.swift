@@ -274,7 +274,6 @@ class ChatViewModel: ObservableObject {
                         )
                     } catch {
                         Task { @MainActor in
-                            guard let self = self else { return }
                             let errorMsg = Message(content: "❌ 技能执行失败: \(error.localizedDescription)", isUser: false)
                             self.addMessage(errorMsg)
                             self.isProcessing = false

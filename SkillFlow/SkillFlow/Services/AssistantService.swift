@@ -68,113 +68,45 @@ class AssistantService {
             // 2. 调用 GLM-4V 生成任务
             let vlmResponse = try await APIService.shared.executeVLMTask(intent: currentIntent, imageData: screenData)
             
-            onProgress("🧠 [步骤 \(stepCount)] 思考: \(vlmResponse.thought)\n⚡️ 开始执行动作...")
+            // 3. 汇报思考过程
+            onProgress("🧠 [思考] \(vlmResponse.thought)")
             
-            // 3. 执行任务
-            let inputService = InputControlService.shared
+            // 4. 执行任务
+            try await executeVLMTasks(vlmResponse.tasks, onProgress: onProgress)
+            
+            // 5. 验证与后续处理 (Task Loop Logic)
+            // 检查是否需要重新提交
+            // 注意：executeVLMTasks 不会返回 shouldResubmit，我们需要检查 tasks 中的最后一个动作
+            // 或者我们可以让 executeVLMTasks 返回一个状态，但为了简单，我们在 executeVLMTasks 内部处理了 resubmit 的执行
+            // 这里我们需要检查 vlmResponse.tasks 是否包含 resubmit 或 finish
+            
             var shouldResubmit = false
             var nextPrompt: String?
             
-            for (index, task) in vlmResponse.tasks.enumerated() {
-                onProgress("▶️ [步骤 \(stepCount)] 执行 \(index + 1)/\(vlmResponse.tasks.count): \(task.action.rawValue)")
-                
-                switch task.action {
-                case .moveMouse:
-                    if let x = task.params?.x, let y = task.params?.y {
-                        let screenFrame = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
-                        let pixelX = x * screenFrame.width
-                        let pixelY = y * screenFrame.height
-                        
-                        let duration = task.params?.duration ?? 500
-                        await inputService.smooth_move_mouse(x: pixelX, y: pixelY, durationMs: duration)
-                    }
-                    
-                case .click:
-                    let buttonStr = task.params?.button ?? "left"
-                    let button: MouseButton = (buttonStr == "right") ? .right : .left
-                    await inputService.mouse_down(button: button)
-                    await inputService.delay(100) // 点击持续时间
-                    await inputService.mouse_up(button: button)
-                    
-                case .mouseDown:
-                    let buttonStr = task.params?.button ?? "left"
-                    let button: MouseButton = (buttonStr == "right") ? .right : .left
-                    await inputService.mouse_down(button: button)
-                    
-                case .mouseUp:
-                    let buttonStr = task.params?.button ?? "left"
-                    let button: MouseButton = (buttonStr == "right") ? .right : .left
-                    await inputService.mouse_up(button: button)
-                    
-                case .keyPress:
-                    if let keyStr = task.params?.key, let key = mapKey(keyStr) {
-                        await inputService.key_press(key: key)
-                    }
-                    
-                case .keyRelease:
-                    if let keyStr = task.params?.key, let key = mapKey(keyStr) {
-                        await inputService.key_release(key: key)
-                    }
-                    
-                case .type:
-                    // Legacy support: if model still outputs type, fallback to paste if text is present
-                    if let text = task.params?.text {
-                        await inputService.paste_text(text)
-                    }
-                    
-                case .pasteText:
-                    if let text = task.params?.text {
-                        await inputService.paste_text(text)
-                    }
-                    
-                case .delay:
-                    let ms = task.params?.duration ?? 500
-                    await inputService.delay(ms)
-                    
-                case .allRelease:
-                    await inputService.all_release()
-                    
-                case .resubmit:
+            if let lastTask = vlmResponse.tasks.last {
+                if lastTask.action == .resubmit {
                     shouldResubmit = true
-                    nextPrompt = task.params?.prompt
-                    // 遇到 resubmit 后，执行完当前循环的其他任务吗？
-                    // 通常 resubmit 应该是最后一个动作，但如果有其他动作，也先执行完比较安全
-                    
-                case .finish:
-                    // 原先是直接 return，现在改为 break 跳出循环，进入下方的验证流程
-                    // onProgress("🎉 任务标记完成")
-                    // return
-                    break // Break switch, then loop continues to next task or finishes
-                    
-                case .fail:
-                    throw NSError(domain: "AssistantService", code: -1, userInfo: [NSLocalizedDescriptionKey: "模型反馈无法完成任务"])
-                }
-                
-                // 步骤间默认延迟
-                await inputService.delay(200)
-                
-                // 如果遇到 finish，就不再执行后续任务了，直接跳出任务循环进入验证
-                if task.action == .finish {
-                    break
+                    nextPrompt = lastTask.params?.prompt
+                } else if lastTask.action == .finish {
+                    break // 跳出循环进行验证
                 }
             }
             
-            await inputService.all_release()
-            
-            // 检查是否需要重新提交
             if shouldResubmit {
                 if let prompt = nextPrompt {
                     currentIntent = prompt
-                    onProgress("🔄 任务未完成，进入下一阶段: \(prompt)")
-                    // 稍微等待页面刷新
+                    onProgress("🔄 [系统] 任务未完成，进入下一阶段: \(prompt)")
                     try await Task.sleep(nanoseconds: 1_000_000_000)
                     continue
                 } else {
-                    // Resubmit but no prompt? Fallback to original intent or stop
-                    onProgress("⚠️ 要求重试但未提供新提示，停止。")
+                    onProgress("⚠️ [系统] 要求重试但未提供新提示，停止。")
                     return
                 }
             } else {
+                // 如果没有显式的 finish 或 resubmit，通常也应该验证一下
+                // 但如果模型只是执行了一部分，可能不需要验证？
+                // 默认策略：如果不是 resubmit，就进行验证
+
                 // 3.5 验证阶段 (Validation)
                 // 截图并验证
                 guard let validationScreen = await ScreenCaptureService.shared.captureMainScreen() else {
@@ -231,14 +163,13 @@ class AssistantService {
             onProgress("👀 正在分析屏幕以定位目标: \(step.targetName)...")
             let vlmResponse = try await APIService.shared.executeSkillStepWithVLM(step: step, imageData: screenData)
             
-            onProgress("🧠 思考: \(vlmResponse.thought)\n⚡️ 执行动作...")
+            // 3. 汇报思考
+            onProgress("🧠 [思考] \(vlmResponse.thought)")
             
-            // 3. 执行 VLM 生成的具体操作
-            // 这里复用 performAutomation 中的执行逻辑，但需要适配一下参数传递
-            // 为了避免代码重复，我们把执行逻辑提取出来，或者直接在这里处理
+            // 4. 执行 VLM 生成的具体操作
             try await executeVLMTasks(vlmResponse.tasks, onProgress: onProgress)
             
-            // 4. 验证当前步骤 (Validate)
+            // 5. 验证当前步骤 (Validate)
             onProgress("🔍 验证步骤 \(index + 1) 结果...")
             // 验证时使用当前步骤的 instruction 作为 goal
             guard let validationScreen = await ScreenCaptureService.shared.captureMainScreen() else { continue }
@@ -274,9 +205,9 @@ class AssistantService {
     private func executeVLMTasks(_ tasks: [AutomationTask], onProgress: @escaping (String) -> Void) async throws {
         let inputService = InputControlService.shared
         
-        for task in tasks {
-            // ... (Copy switch logic from performAutomation or refactor)
-            // 为了简洁，这里快速复刻一份 switch 逻辑，理想情况应提取为 InputService 的扩展或单独的 Executor
+        for (index, task) in tasks.enumerated() {
+            // 汇报当前动作
+            onProgress("▶️ [操作] 执行动作 \(index + 1)/\(tasks.count): \(task.action.rawValue)")
             
             switch task.action {
             case .moveMouse:
@@ -287,20 +218,32 @@ class AssistantService {
                     let duration = task.params?.duration ?? 500
                     await inputService.smooth_move_mouse(x: pixelX, y: pixelY, durationMs: duration)
                 }
-            case .click:
+                
+            case .click, .mouseDown, .mouseUp:
+                // 检查参数中是否有坐标，如果有则先移动
+                if let x = task.params?.x, let y = task.params?.y {
+                    let screenFrame = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+                    let pixelX = x * screenFrame.width
+                    let pixelY = y * screenFrame.height
+                    // 移动前先确保没有按键残留
+                    // await inputService.all_release() 
+                    await inputService.smooth_move_mouse(x: pixelX, y: pixelY, durationMs: 500)
+                    await inputService.delay(100)
+                }
+                
                 let buttonStr = task.params?.button ?? "left"
                 let button: MouseButton = (buttonStr == "right") ? .right : .left
-                await inputService.mouse_down(button: button)
-                await inputService.delay(100)
-                await inputService.mouse_up(button: button)
-            case .mouseDown:
-                let buttonStr = task.params?.button ?? "left"
-                let button: MouseButton = (buttonStr == "right") ? .right : .left
-                await inputService.mouse_down(button: button)
-            case .mouseUp:
-                let buttonStr = task.params?.button ?? "left"
-                let button: MouseButton = (buttonStr == "right") ? .right : .left
-                await inputService.mouse_up(button: button)
+                
+                if task.action == .click {
+                    await inputService.mouse_down(button: button)
+                    await inputService.delay(100)
+                    await inputService.mouse_up(button: button)
+                } else if task.action == .mouseDown {
+                    await inputService.mouse_down(button: button)
+                } else if task.action == .mouseUp {
+                    await inputService.mouse_up(button: button)
+                }
+                
             case .keyPress:
                 if let keyStr = task.params?.key, let key = mapKey(keyStr) {
                     await inputService.key_press(key: key)
@@ -319,7 +262,7 @@ class AssistantService {
             case .allRelease:
                 await inputService.all_release()
             case .resubmit, .finish:
-                break // Skill execution handles flow differently
+                break // Flow handled by caller
             case .fail:
                 throw NSError(domain: "AssistantService", code: -1, userInfo: [NSLocalizedDescriptionKey: "模型反馈无法完成步骤"])
             }
