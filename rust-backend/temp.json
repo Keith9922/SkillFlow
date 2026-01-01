@@ -1,0 +1,82 @@
+{
+  "version": "0.1",
+  "package": {
+    "name": "photoshop_change_background_color_001",
+    "createdAt": "2023-10-27T00:00:00.000Z",
+    "description": "Photoshop中通过选择主体、复制图层、新建空白图层并填充颜色的方式更换照片底色"
+  },
+  "app": {
+    "name": "Adobe Photoshop"
+  },
+  "selectors": {
+    "sel_select_menu": {
+      "strategy": "ocr",
+      "text": "选择",
+      "match": {
+        "lang": "chi_sim"
+      }
+    },
+    "sel_subject_option": {
+      "strategy": "ocr",
+      "text": "主体",
+      "match": {
+        "lang": "chi_sim"
+      }
+    },
+    "sel_new_layer_btn": {
+      "strategy": "ocr",
+      "text": "新建图层",
+      "match": {
+        "lang": "chi_sim"
+      }
+    },
+    "sel_layer_2": {
+      "strategy": "ocr",
+      "text": "图层2",
+      "match": {
+        "lang": "chi_sim"
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "op": "click",
+      "target": {
+        "$ref": "#/selectors/sel_select_menu"
+      }
+    },
+    {
+      "id": "step_2",
+      "op": "click",
+      "target": {
+        "$ref": "#/selectors/sel_subject_option"
+      },
+      "scope": {
+        "type": "activeMenu"
+      }
+    },
+    {
+      "id": "step_3",
+      "op": "hotkey",
+      "keys": [
+        "CTRL",
+        "J"
+      ]
+    },
+    {
+      "id": "step_4",
+      "op": "click",
+      "target": {
+        "$ref": "#/selectors/sel_new_layer_btn"
+      }
+    },
+    {
+      "id": "step_5",
+      "op": "click",
+      "target": {
+        "$ref": "#/selectors/sel_layer_2"
+      }
+    }
+  ]
+}

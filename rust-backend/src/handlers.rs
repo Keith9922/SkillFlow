@@ -7,6 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::env;
 use crate::{
     domain::task::TaskStatus,
     service::{task_service::MemTaskService, process},
@@ -19,9 +20,23 @@ pub struct AppState {
 
 // Request/Response Structs
 
-#[derive(Deserialize)]
-pub struct CreateTaskRequest {
-    // Empty request body or optional fields if needed
+#[derive(Serialize)]
+pub struct HealthResponse {
+    pub status: String,
+    pub components: Components,
+}
+
+#[derive(Serialize)]
+pub struct Components {
+    pub parse: ComponentStatus,
+    pub compose: ComponentStatus,
+}
+
+#[derive(Serialize)]
+pub struct ComponentStatus {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -97,15 +112,34 @@ pub struct TaskSummary {
 // Handlers
 
 pub async fn health_check() -> impl IntoResponse {
-    Json(json!({
-        "status": "ok",
-        "message": "API Services"
-    }))
+    // Check Parse module (depends on OpenRouter API Key)
+    let parse_status = match env::var("OPENROUTER_API_KEY") {
+        Ok(_) => ComponentStatus { status: "healthy".to_string(), message: None },
+        Err(_) => ComponentStatus { status: "degraded".to_string(), message: Some("OPENROUTER_API_KEY missing".to_string()) },
+    };
+
+    // Check Compose module (Simulated/Ready)
+    // Currently compose is integrated/simulated, so we consider it healthy if the service is running
+    let compose_status = ComponentStatus { status: "healthy".to_string(), message: None };
+
+    // Overall status
+    let status = if parse_status.status == "healthy" && compose_status.status == "healthy" {
+        "healthy".to_string()
+    } else {
+        "degraded".to_string()
+    };
+
+    Json(HealthResponse {
+        status,
+        components: Components {
+            parse: parse_status,
+            compose: compose_status,
+        }
+    })
 }
 
 pub async fn create_task(
     State(state): State<Arc<AppState>>,
-    Json(_payload): Json<CreateTaskRequest>,
 ) -> impl IntoResponse {
     let task = state.task_service.create_task("".to_string()); // No directory needed initially
     Json(CreateTaskResponse {

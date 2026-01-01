@@ -112,7 +112,7 @@ mod tests {
         let task = service.create_task("s3://bucket/prefix/".to_string());
         
         assert_eq!(task.dir_location, "s3://bucket/prefix/");
-        assert_eq!(task.status, TaskStatus::Processing);
+        assert_eq!(task.status, TaskStatus::Created);
         assert!(service.get_task(&task.entry_id).is_some());
     }
 

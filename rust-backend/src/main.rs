@@ -12,7 +12,12 @@ use handlers::AppState;
 #[tokio::main]
 async fn main() {
     // 初始化日志
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,tower_http=debug".into()),
+        )
+        .init();
     
     // Load environment variables (optional, assuming dotenvy usage for keys)
     let _ = dotenvy::dotenv();
@@ -27,7 +32,7 @@ async fn main() {
     let app = router::create_router(app_state);
 
     // 定义监听地址
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 64808));
     info!("listening on {}", addr);
 
     // 启动服务

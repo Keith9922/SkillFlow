@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
+    Created,
     Processing,
     AudioDone,
     VideoDone,
@@ -43,7 +44,7 @@ impl Task {
             transcript_text: None,
             video_analysis: None,
             steps_package: None,
-            status: TaskStatus::Processing,
+            status: TaskStatus::Created,
             error: None,
             created_at: now,
             updated_at: now,
