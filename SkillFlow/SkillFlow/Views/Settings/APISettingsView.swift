@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 
 struct APISettingsView: View {
     @StateObject private var config = APIConfiguration.shared
@@ -112,6 +113,54 @@ struct APISettingsView: View {
             // Show success feedback
             NSSound.beep()
         }
+    }
+}
+
+// MARK: - Mock Configuration Models
+
+enum APIVersion: String, CaseIterable, Hashable {
+    case seedo
+    case legacy
+    
+    var displayName: String {
+        switch self {
+        case .seedo: return "SEEDO API (v2)"
+        case .legacy: return "Legacy API (v1)"
+        }
+    }
+    
+    var description: String {
+        switch self {
+        case .seedo: return "基于 REST 和 S3 的新版架构"
+        case .legacy: return "基于 WebSocket 的旧版架构"
+        }
+    }
+}
+
+class APIConfiguration: ObservableObject {
+    static let shared = APIConfiguration()
+    
+    @Published var currentVersion: APIVersion = .seedo
+    @Published var seedoBaseURL: String = "https://api.seedo.example.com"
+    @Published var s3Bucket: String = "skillflow-bucket"
+    @Published var s3Region: String = "us-east-1"
+    @Published var legacyBaseURL: String = "wss://api.legacy.example.com"
+    
+    // Add other properties if needed by other views, but for now APISettingsView only needs these.
+    @Published var s3Endpoint: String = "https://s3.amazonaws.com"
+    @Published var s3AccessKey: String = ""
+    @Published var s3SecretKey: String = ""
+    
+    func resetToDefaults() {
+        currentVersion = .seedo
+        seedoBaseURL = "https://api.seedo.example.com"
+        s3Bucket = "skillflow-bucket"
+        s3Region = "us-east-1"
+        legacyBaseURL = "wss://api.legacy.example.com"
+    }
+    
+    func validateConfiguration() -> [String] {
+        return [] // Always valid for UI demo
     }
 }
 

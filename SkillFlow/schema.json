@@ -1,0 +1,667 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/aipdl/package.schema.json",
+  "title": "AIPDL Package (Single-File: manifest + selectors + steps)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "package", "app", "selectors", "steps"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$",
+      "description": "Spec version of AIPDL, e.g. 0.1"
+    },
+
+    "package": { "$ref": "#/$defs/PackageMeta" },
+    "app": { "$ref": "#/$defs/AppSpec" },
+    "env": { "$ref": "#/$defs/EnvSpec" },
+    "vars": { "$ref": "#/$defs/Vars" },
+
+    "selectors": {
+      "type": "object",
+      "description": "Selector registry. Steps reference selectors via $ref: #/selectors/<id>.",
+      "additionalProperties": { "$ref": "#/$defs/Selector" }
+    },
+
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Step" }
+    }
+  },
+
+  "$defs": {
+    "PackageMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "createdAt"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "description": { "type": "string" },
+        "author": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+
+    "AppSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "minVersion": { "type": "string" },
+        "maxVersion": { "type": "string" }
+      }
+    },
+
+    "EnvSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "os": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["macOS", "Windows", "Linux"] }
+        },
+        "resolutionHint": { "type": "string" },
+        "localeHint": { "type": "string" }
+      }
+    },
+
+    "Vars": {
+      "type": "object",
+      "description": "User-provided variables; Runner resolves {{VAR}} in step text/paths.",
+      "additionalProperties": { "$ref": "#/$defs/VarDef" }
+    },
+
+    "VarDef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string", "enum": ["string", "number", "boolean", "path"] },
+        "default": {},
+        "description": { "type": "string" }
+      }
+    },
+
+    "StepId": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_\\-]*$"
+    },
+
+    "Retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "times": { "type": "integer", "minimum": 0, "default": 0 },
+        "intervalMs": { "type": "integer", "minimum": 0, "default": 0 },
+        "timeoutMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "OnFail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "enum": ["abort", "skip", "fallback_step_id"] },
+        "reason": { "type": "string" },
+        "stepId": { "$ref": "#/$defs/StepId", "description": "Required when action=fallback_step_id" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "action": { "const": "fallback_step_id" } }, "required": ["action"] },
+          "then": { "required": ["stepId"] }
+        }
+      ]
+    },
+
+    "FallbackPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "normalized": { "type": "boolean", "default": true }
+      }
+    },
+
+    "Fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["point"],
+      "properties": {
+        "point": { "$ref": "#/$defs/FallbackPoint" },
+        "policy": { "type": "string", "enum": ["last_retry_only", "always"] }
+      }
+    },
+
+    "RefToSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$ref"],
+      "properties": {
+        "$ref": {
+          "type": "string",
+          "pattern": "^#/selectors/[A-Za-z0-9_\\-]+$"
+        }
+      }
+    },
+
+    "SelectorOrRef": {
+      "oneOf": [{ "$ref": "#/$defs/RefToSelector" }, { "$ref": "#/$defs/Selector" }]
+    },
+
+    "Selector": {
+      "description": "Selector definition. Prefer defining in selectors registry; steps may inline via SelectorOrRef.",
+      "oneOf": [
+        { "$ref": "#/$defs/OCRSelector" },
+        { "$ref": "#/$defs/TemplateSelector" },
+        { "$ref": "#/$defs/RelativeSelector" },
+        { "$ref": "#/$defs/MultiSelector" }
+      ]
+    },
+
+    "OCRSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "text"],
+      "properties": {
+        "strategy": { "const": "ocr" },
+        "text": { "type": "string", "minLength": 1 },
+        "match": { "$ref": "#/$defs/OCRMatch" },
+        "scope": { "$ref": "#/$defs/Scope" }
+      }
+    },
+
+    "OCRMatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string", "enum": ["equals", "contains", "regex"], "default": "contains" },
+        "lang": { "type": "string", "default": "chi_sim" },
+        "caseSensitive": { "type": "boolean", "default": false },
+        "regex": { "type": "string", "description": "Used when mode=regex" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "regex" } }, "required": ["mode"] },
+          "then": { "required": ["regex"] }
+        }
+      ]
+    },
+
+    "TemplateSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "template"],
+      "properties": {
+        "strategy": { "const": "template" },
+        "template": { "type": "string", "minLength": 1, "description": "Path inside aipkg, e.g. assets/templates/x.png" },
+        "match": { "$ref": "#/$defs/TemplateMatch" },
+        "scope": { "$ref": "#/$defs/Scope" }
+      }
+    },
+
+    "TemplateMatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.8 }
+      }
+    },
+
+    "RelativeSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "anchor", "relation", "target"],
+      "properties": {
+        "strategy": { "const": "relative" },
+        "anchor": { "$ref": "#/$defs/SelectorOrRef" },
+        "relation": { "$ref": "#/$defs/Relation" },
+        "target": { "$ref": "#/$defs/SelectorOrRef" },
+        "scope": {
+          "$ref": "#/$defs/Scope",
+          "description": "Optional global scope for resolving anchor/target; target/anchor scope can still override."
+        }
+      }
+    },
+
+    "Relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["below", "above", "leftOf", "rightOf", "near"]
+        },
+        "maxDistancePx": { "type": "integer", "minimum": 0, "default": 400 }
+      }
+    },
+
+    "MultiSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "candidates"],
+      "properties": {
+        "strategy": { "const": "multi" },
+        "candidates": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/SelectorOrRef" }
+        },
+        "pick": { "$ref": "#/$defs/PickPolicy" },
+        "scope": { "$ref": "#/$defs/Scope" }
+      }
+    },
+
+    "PickPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policy": { "type": "string", "enum": ["bestConfidence", "firstMatch"], "default": "bestConfidence" }
+      }
+    },
+
+    "Scope": {
+      "description": "Restricts the search region/layer/window context for resolve().",
+      "oneOf": [
+        { "$ref": "#/$defs/ScopeRect" },
+        { "$ref": "#/$defs/ScopeBand" },
+        { "$ref": "#/$defs/ScopeWindow" },
+        { "$ref": "#/$defs/ScopeDialog" },
+        { "$ref": "#/$defs/ScopeActiveMenu" },
+        { "$ref": "#/$defs/ScopeElementRef" },
+        { "$ref": "#/$defs/ScopeAround" },
+        { "$ref": "#/$defs/ScopeNearest" },
+        { "$ref": "#/$defs/ScopeUnion" },
+        { "$ref": "#/$defs/ScopeIntersect" },
+        { "$ref": "#/$defs/ScopeExclude" }
+      ]
+    },
+
+    "ScopeRect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "x", "y", "w", "h"],
+      "properties": {
+        "type": { "const": "rect" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "w": { "type": "number" },
+        "h": { "type": "number" },
+        "normalized": { "type": "boolean", "default": true }
+      }
+    },
+
+    "ScopeBand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "edge", "ratio"],
+      "properties": {
+        "type": { "const": "band" },
+        "edge": { "type": "string", "enum": ["top", "bottom", "left", "right"] },
+        "ratio": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+
+    "ScopeWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "mode"],
+      "properties": {
+        "type": { "const": "window" },
+        "mode": { "type": "string", "enum": ["active", "main", "byTitle"] },
+        "title": { "type": "string" },
+        "match": { "type": "string", "enum": ["equals", "contains", "regex"], "default": "contains" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "byTitle" } }, "required": ["mode"] },
+          "then": { "required": ["title"] }
+        }
+      ]
+    },
+
+    "ScopeDialog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "role"],
+      "properties": {
+        "type": { "const": "dialog" },
+        "role": { "type": "string", "enum": ["topmost", "modal", "byTitle"] },
+        "title": { "type": "string" },
+        "match": { "type": "string", "enum": ["equals", "contains", "regex"], "default": "contains" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "role": { "const": "byTitle" } }, "required": ["role"] },
+          "then": { "required": ["title"] }
+        }
+      ]
+    },
+
+    "ScopeActiveMenu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": { "type": { "const": "activeMenu" } }
+    },
+
+    "ScopeElementRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "refStepId"],
+      "properties": {
+        "type": { "const": "elementRef" },
+        "refStepId": { "$ref": "#/$defs/StepId" },
+        "paddingPx": { "type": "integer", "minimum": 0, "default": 0 }
+      }
+    },
+
+    "ScopeAround": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "anchor", "radiusPx"],
+      "properties": {
+        "type": { "const": "around" },
+        "anchor": { "$ref": "#/$defs/SelectorOrRef" },
+        "radiusPx": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "ScopeNearest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "to"],
+      "properties": {
+        "type": { "const": "nearest" },
+        "to": { "type": "string", "enum": ["anchor"] }
+      }
+    },
+
+    "ScopeUnion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "scopes"],
+      "properties": {
+        "type": { "const": "union" },
+        "scopes": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/$defs/Scope" }
+        }
+      }
+    },
+
+    "ScopeIntersect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "scopes"],
+      "properties": {
+        "type": { "const": "intersect" },
+        "scopes": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/$defs/Scope" }
+        }
+      }
+    },
+
+    "ScopeExclude": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "base", "exclude"],
+      "properties": {
+        "type": { "const": "exclude" },
+        "base": { "$ref": "#/$defs/Scope" },
+        "exclude": { "$ref": "#/$defs/Scope" }
+      }
+    },
+
+    "Step": {
+      "oneOf": [
+        { "$ref": "#/$defs/StepClick" },
+        { "$ref": "#/$defs/StepDrag" },
+        { "$ref": "#/$defs/StepType" },
+        { "$ref": "#/$defs/StepScroll" },
+        { "$ref": "#/$defs/StepHotkey" },
+        { "$ref": "#/$defs/StepWait" },
+        { "$ref": "#/$defs/StepAssert" }
+      ]
+    },
+
+    "BaseStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "op"],
+      "properties": {
+        "id": { "$ref": "#/$defs/StepId" },
+        "op": {
+          "type": "string",
+          "enum": ["click", "drag", "type", "scroll", "hotkey", "wait", "assert"]
+        },
+        "name": { "type": "string" },
+        "scope": { "$ref": "#/$defs/Scope", "description": "Optional step-level scope; selectors can override." },
+        "retry": { "$ref": "#/$defs/Retry" },
+        "on_fail": { "$ref": "#/$defs/OnFail" }
+      }
+    },
+
+    "StepClick": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseStep" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "target"],
+          "properties": {
+            "op": { "const": "click" },
+            "target": { "$ref": "#/$defs/SelectorOrRef" },
+            "params": { "$ref": "#/$defs/ClickParams" },
+            "fallback": { "$ref": "#/$defs/Fallback" }
+          }
+        }
+      ]
+    },
+
+    "ClickParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "button": { "type": "string", "enum": ["left", "right", "middle"], "default": "left" },
+        "clickCount": { "type": "integer", "minimum": 1, "maximum": 3, "default": 1 },
+        "offset": { "$ref": "#/$defs/Offset" }
+      }
+    },
+
+    "Offset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dx", "dy"],
+      "properties": {
+        "dx": { "type": "integer" },
+        "dy": { "type": "integer" }
+      }
+    },
+
+    "StepDrag": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseStep" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "from"],
+          "properties": {
+            "op": { "const": "drag" },
+            "from": { "$ref": "#/$defs/SelectorOrRef" },
+            "to": { "$ref": "#/$defs/SelectorOrRef" },
+            "vector": { "$ref": "#/$defs/DragVector" },
+            "params": { "$ref": "#/$defs/DragParams" },
+            "fallback": { "$ref": "#/$defs/Fallback" }
+          },
+          "allOf": [
+            {
+              "oneOf": [
+                { "required": ["to"] },
+                { "required": ["vector"] }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+
+    "DragVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direction", "distancePx"],
+      "properties": {
+        "direction": { "type": "string", "enum": ["up", "down", "left", "right"] },
+        "distancePx": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "DragParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "durationMs": { "type": "integer", "minimum": 0, "default": 250 }
+      }
+    },
+
+    "StepType": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseStep" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "text"],
+          "properties": {
+            "op": { "const": "type" },
+            "text": { "type": "string", "minLength": 0, "description": "Supports {{VAR}} interpolation." },
+            "target": { "$ref": "#/$defs/SelectorOrRef", "description": "Optional: click/focus before typing." },
+            "params": { "$ref": "#/$defs/TypeParams" }
+          }
+        }
+      ]
+    },
+
+    "TypeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clearFirst": { "type": "boolean", "default": false },
+        "delayPerCharMs": { "type": "integer", "minimum": 0, "default": 0 }
+      }
+    },
+
+    "StepScroll": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseStep" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "delta"],
+          "properties": {
+            "op": { "const": "scroll" },
+            "target": { "$ref": "#/$defs/SelectorOrRef", "description": "Optional: scroll within this region." },
+            "delta": { "$ref": "#/$defs/ScrollDelta" },
+            "params": { "$ref": "#/$defs/ScrollParams" }
+          }
+        }
+      ]
+    },
+
+    "ScrollDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direction", "amount"],
+      "properties": {
+        "direction": { "type": "string", "enum": ["up", "down", "left", "right"] },
+        "amount": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "ScrollParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "steps": { "type": "integer", "minimum": 1, "default": 1 }
+      }
+    },
+
+    "StepHotkey": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseStep" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "keys"],
+          "properties": {
+            "op": { "const": "hotkey" },
+            "keys": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 },
+              "description": "e.g. [\"CMD\", \"S\"] or [\"CTRL\", \"SHIFT\", \"E\"]"
+            }
+          }
+        }
+      ]
+    },
+
+    "StepWait": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseStep" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "until"],
+          "properties": {
+            "op": { "const": "wait" },
+            "until": { "$ref": "#/$defs/SelectorOrRef" },
+            "params": { "$ref": "#/$defs/WaitParams" }
+          }
+        }
+      ]
+    },
+
+    "WaitParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string", "enum": ["appear", "disappear"], "default": "appear" },
+        "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.6 }
+      }
+    },
+
+    "StepAssert": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseStep" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "expect"],
+          "properties": {
+            "op": { "const": "assert" },
+            "expect": { "$ref": "#/$defs/SelectorOrRef" },
+            "params": { "$ref": "#/$defs/AssertParams" }
+          }
+        }
+      ]
+    },
+
+    "AssertParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.65 },
+        "negate": { "type": "boolean", "default": false }
+      }
+    }
+  }
+}

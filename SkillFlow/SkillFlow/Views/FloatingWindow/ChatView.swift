@@ -34,14 +34,27 @@ struct ChatView: View {
                             }
                         }
                         
-                        // Show detailed progress if processing
-                        if viewModel.isProcessing {
+                        // Show detailed progress if processing VIDEO (not just regular chat)
+                        // Use a simple check: if stageDetails has any "inProgress" other than idle, and it's video related
+                        if viewModel.isProcessing && viewModel.currentStage != .idle {
                             StageProgressView(
                                 stageDetails: viewModel.stageDetails,
                                 currentProgress: viewModel.parseProgress
                             )
                             .padding(.horizontal)
                             .transition(.opacity)
+                        } else if viewModel.isProcessing {
+                            // Simple loading indicator for chat processing
+                            HStack {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("思考中...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal)
+                            .padding(.vertical, 4)
                         }
                         
                         // Show error if present
@@ -121,25 +134,47 @@ struct ChatView: View {
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
         
-        provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { (urlData, error) in
-            DispatchQueue.main.async {
-                if let urlData = urlData as? Data,
-                   let path = String(data: urlData, encoding: .utf8),
-                   let url = URL(string: path) {
-                    
-                    // Check if it's a video file
-                    let videoExtensions = ["mp4", "mov", "avi", "mkv", "flv", "wmv", "m4v"]
-                    let fileExtension = url.pathExtension.lowercased()
-                    
-                    if videoExtensions.contains(fileExtension) {
-                        viewModel.processLocalVideo(url: url)
-                    } else {
-                        viewModel.errorMessage = "不支持的文件格式。请上传视频文件（MP4, MOV, AVI 等）"
+        // 优先尝试直接加载 URL 对象，这样能更好地保留沙盒权限信息
+        if provider.canLoadObject(ofClass: URL.self) {
+            _ = provider.loadObject(ofClass: URL.self) { url, error in
+                DispatchQueue.main.async {
+                    if let url = url {
+                        self.validateAndProcess(url: url)
+                    } else if let error = error {
+                        print("Drop error: \(error.localizedDescription)")
+                        self.viewModel.errorMessage = "无法读取文件: \(error.localizedDescription)"
                     }
+                }
+            }
+            return true
+        }
+        
+        // 降级方案：尝试加载 file-url 数据
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { (item, error) in
+            DispatchQueue.main.async {
+                if let data = item as? Data,
+                   let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    self.validateAndProcess(url: url)
+                } else if let url = item as? URL {
+                    self.validateAndProcess(url: url)
+                } else {
+                    print("Drop failed to load URL")
                 }
             }
         }
         
         return true
+    }
+    
+    private func validateAndProcess(url: URL) {
+        // Check if it's a video file
+        let videoExtensions = ["mp4", "mov", "avi", "mkv", "flv", "wmv", "m4v"]
+        let fileExtension = url.pathExtension.lowercased()
+        
+        if videoExtensions.contains(fileExtension) {
+            viewModel.processLocalVideo(url: url)
+        } else {
+            viewModel.errorMessage = "不支持的文件格式。请上传视频文件（MP4, MOV, AVI 等）"
+        }
     }
 }

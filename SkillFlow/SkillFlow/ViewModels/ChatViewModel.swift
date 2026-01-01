@@ -21,56 +21,33 @@ class ChatViewModel: ObservableObject {
     @Published var stageDetails: [StageDetail] = []
     @Published var errorMessage: String?
     
-    // MARK: - Dependencies
-    private let apiService: SEEDOAPIService
-    private let pollingManager: PollingManager
-    private let s3Uploader: S3Uploader
-    private let videoDownloader: VideoDownloader
-    private let tokenManager: TokenManager
-    private let dataConverter: DataConverter
-    
     private var modelContext: ModelContext?
     private var currentEntryId: String?
+    private let videoProcessor = VideoProcessingService()
+    private let s3Service = S3Service()
     
     // MARK: - Initialization
     
-    init(
-        apiService: SEEDOAPIService? = nil,
-        pollingManager: PollingManager? = nil,
-        s3Uploader: S3Uploader? = nil,
-        videoDownloader: VideoDownloader? = nil,
-        tokenManager: TokenManager? = nil,
-        dataConverter: DataConverter? = nil
-    ) {
-        // Use provided dependencies or create defaults
-        let tokenMgr = tokenManager ?? TokenManager.shared
-        let apiSvc = apiService ?? SEEDOAPIService(
-            baseURL: "https://api.seedo.example.com",
-            tokenManager: tokenMgr
-        )
-        
-        self.tokenManager = tokenMgr
-        self.apiService = apiSvc
-        self.pollingManager = pollingManager ?? PollingManager(apiService: apiSvc)
-        
-        // 使用 APIConfiguration 中的 S3 配置
-        let config = APIConfiguration.shared
-        self.s3Uploader = s3Uploader ?? S3Uploader(
-            endpoint: config.s3Endpoint,
-            bucket: config.s3Bucket,
-            accessKey: config.s3AccessKey,
-            secretKey: config.s3SecretKey,
-            region: config.s3Region
-        )
-        self.videoDownloader = videoDownloader ?? VideoDownloader()
-        self.dataConverter = dataConverter ?? DataConverter()
-        
+    init() {
         initializeStageDetails()
     }
     
     func setModelContext(_ context: ModelContext) {
         self.modelContext = context
         loadMessages()
+        
+        // Listen for skill insertion notification
+        NotificationCenter.default.addObserver(
+            forName: .insertSkillReference,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor in
+                guard let self = self,
+                      let skill = notification.userInfo?["skill"] as? Skill else { return }
+                self.insertSkillReference(skill)
+            }
+        }
     }
     
     private func loadMessages() {
@@ -85,6 +62,10 @@ class ChatViewModel: ObservableObject {
         } catch {
             print("Failed to load messages: \(error)")
         }
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
     
     // MARK: - Stage Management
@@ -124,19 +105,6 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    private func markStageCompleted(_ stage: ParseStage) {
-        if let index = stageDetails.firstIndex(where: { $0.stage == stage }) {
-            stageDetails[index].status = .completed
-        }
-    }
-    
-    private func markStageFailed(_ stage: ParseStage, error: String) {
-        if let index = stageDetails.firstIndex(where: { $0.stage == stage }) {
-            stageDetails[index].status = .failed
-        }
-        errorMessage = error
-    }
-    
     // MARK: - Send Message
     
     func sendMessage() {
@@ -160,6 +128,71 @@ class ChatViewModel: ObservableObject {
         }
     }
     
+    // MARK: - Skill Invocation
+    
+    private func insertSkillReference(_ skill: Skill) {
+        // Append @SkillName to input text
+        if inputText.isEmpty {
+            inputText = "@\(skill.name) "
+        } else {
+            inputText += " @\(skill.name) "
+        }
+    }
+    
+    private func handleSkillInvocation(_ input: String) {
+        // Extract skill name from input (e.g. "@Photoshop Crop ...")
+        // Simple parsing: find @, take until space or end
+        let components = input.components(separatedBy: " ")
+        var skillName: String?
+        
+        for component in components {
+            if component.hasPrefix("@") {
+                skillName = String(component.dropFirst())
+                break
+            }
+        }
+        
+        guard let name = skillName, !name.isEmpty else {
+            handleRegularChat(input)
+            return
+        }
+        
+        // Find skill in DB
+        guard let context = modelContext else { return }
+        let descriptor = FetchDescriptor<Skill>(
+            predicate: #Predicate<Skill> { $0.name == name }
+        )
+        
+        do {
+            let skills = try context.fetch(descriptor)
+            if let skill = skills.first {
+                // Found skill, "execute" it (Show skill card)
+                currentSkill = skill
+                
+                // Add bot message
+                let response = Message(content: "正在调用技能: \(skill.name)", isUser: false)
+                // Optionally attach skill data to message
+                if let packageData = skill.packageData {
+                    response.skillData = packageData // Store raw package data or customized card data
+                }
+                addMessage(response)
+                
+                // Simulate execution delay
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    let completionMsg = Message(content: "✅ 技能 \(skill.name) 执行完成", isUser: false)
+                    addMessage(completionMsg)
+                }
+                
+            } else {
+                addMessage(Message(content: "❌ 未找到技能: \(name)", isUser: false))
+            }
+        } catch {
+            print("Error fetching skill: \(error)")
+            addMessage(Message(content: "❌ 技能查找出错", isUser: false))
+        }
+    }
+    
     // MARK: - Process Local Video
     
     func processLocalVideo(url: URL) {
@@ -175,108 +208,248 @@ class ChatViewModel: ObservableObject {
         let botMessage = Message(content: "正在处理本地视频...", isUser: false)
         addMessage(botMessage)
         
+        // Security Scoped Resource Handling
+        // 必须在主线程开启访问权限，并传递给异步任务
+        // 注意：startAccessingSecurityScopedResource 必须成对调用 stopAccessingSecurityScopedResource
+        let isAccessing = url.startAccessingSecurityScopedResource()
+        
         Task {
+            // 使用 defer 确保在 Task 结束时释放权限
+            defer {
+                if isAccessing {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            
             do {
-                // Get access to the file
-                guard url.startAccessingSecurityScopedResource() else {
-                    throw NSError(domain: "FileAccess", code: 1, userInfo: [
-                        NSLocalizedDescriptionKey: "无法访问文件"
-                    ])
-                }
-                defer { url.stopAccessingSecurityScopedResource() }
-                
-                // Skip download step since we already have the file
-                updateStage(.downloading, progress: 10, message: "本地文件已就绪")
-                markStageCompleted(.downloading)
-                
-                // Step 1: Extract audio and process video with ffmpeg
-                updateStage(.extractingAudio, progress: 15, message: "正在使用 ffmpeg 分离音视频...")
-                let (audioPath, processedVideoPath, guid) = try await videoDownloader.extractAudioAndProcessVideo(from: url)
-                markStageCompleted(.extractingAudio)
-                
-                // Step 2: Upload to S3
-                updateStage(.uploading, progress: 20, message: "正在上传文件...")
-                let dirLocation = "skillflow/\(guid)/"
-                
-                let videoData = try Data(contentsOf: processedVideoPath)
-                let audioData = try Data(contentsOf: audioPath)
-                
-                let videoS3Key = try await s3Uploader.upload(
-                    data: videoData,
-                    key: "\(dirLocation)\(guid).mp4",
-                    contentType: "video/mp4"
-                ) { progress in
-                    Task { @MainActor in
-                        self.updateStage(.uploading, progress: 20 + progress * 5, message: "上传视频 \(Int(progress * 100))%")
-                    }
+                // Update stage: Extracting Audio/Video
+                await MainActor.run {
+                    updateStage(.extractingAudio, progress: 0.1, message: "正在拆分音频与视频轨道...")
                 }
                 
-                let audioS3Key = try await s3Uploader.upload(
-                    data: audioData,
-                    key: "\(dirLocation)\(guid).mp3",
-                    contentType: "audio/mpeg"
-                ) { progress in
-                    Task { @MainActor in
-                        self.updateStage(.uploading, progress: 25 + progress * 5, message: "上传音频 \(Int(progress * 100))%")
-                    }
-                }
-                markStageCompleted(.uploading)
+                // Perform Split
+                let (videoURL, audioURL) = try await videoProcessor.splitVideo(url: url)
                 
-                // Step 3: Create task
-                updateStage(.creatingTask, progress: 30, message: "正在创建任务...")
-                let entryId = try await apiService.createTask()
-                currentEntryId = entryId
-                markStageCompleted(.creatingTask)
+                print("Video split completed:")
+                print("Video: \(videoURL.path)")
+                print("Audio: \(audioURL.path)")
                 
-                // Step 4: Parse audio
-                updateStage(.audioProcessing, progress: 35, message: "正在提交音频解析...")
-                try await apiService.parseAudio(entryId: entryId, audioUrl: audioS3Key)
-                
-                updateStage(.audioProcessing, progress: 40, message: "正在等待音频转录...")
-                let transcriptText = try await pollForAudio(entryId: entryId)
-                markStageCompleted(.audioProcessing)
-                
-                // Step 5: Parse video
-                updateStage(.videoProcessing, progress: 55, message: "正在提交视频分析...")
-                try await apiService.parseVideo(
-                    entryId: entryId,
-                    videoUrl: videoS3Key,
-                    transcriptText: transcriptText
-                )
-                
-                updateStage(.videoProcessing, progress: 60, message: "正在等待视频分析...")
-                _ = try await pollForVideo(entryId: entryId)
-                markStageCompleted(.videoProcessing)
-                
-                // Step 6: Generate steps
-                updateStage(.stepsGenerating, progress: 80, message: "正在生成操作步骤...")
-                let skill = try await pollForSteps(entryId: entryId)
-                markStageCompleted(.stepsGenerating)
-                
-                // Step 7: Complete
-                updateStage(.completed, progress: 100, message: "视频解析完成！技能已生成：\(skill.name)")
-                markStageCompleted(.completed)
-                
-                // Save skill
-                if let context = modelContext {
-                    context.insert(skill)
-                    try context.save()
+                await MainActor.run {
+                    updateStage(.extractingAudio, progress: 0.3, message: "拆分完成，准备上传文件...")
                 }
                 
-                currentSkill = skill
-                isProcessing = false
+                // Upload to S3
+                await MainActor.run {
+                    updateStage(.uploading, progress: 0.4, message: "正在上传视频与音频到云端...")
+                }
                 
-                let successMessage = Message(content: "✅ 技能生成成功！", isUser: false)
-                addMessage(successMessage)
+                // 使用同一个 uploadId 作为文件夹，方便在 S3 中查看
+                let uploadId = UUID().uuidString
+                print("[Upload] Starting upload batch with ID: \(uploadId)")
+                
+                async let videoUpload = s3Service.upload(fileURL: videoURL, contentType: "video/mp4", folder: uploadId)
+                async let audioUpload = s3Service.upload(fileURL: audioURL, contentType: "audio/wav", folder: uploadId)
+                
+                let (videoPublicURL, audioPublicURL) = try await (videoUpload, audioUpload)
+                
+                print("Upload completed:")
+                print("Video: \(videoPublicURL)")
+                print("Audio: \(audioPublicURL)")
+                
+                await MainActor.run {
+                    updateStage(.uploading, progress: 0.5, message: "上传完成")
+                }
+                
+                // Start Remote Analysis
+                await startRemoteAnalysis(videoURL: videoPublicURL, audioURL: audioPublicURL)
                 
             } catch {
-                markStageFailed(.idle, error: "处理失败: \(error.localizedDescription)")
-                isProcessing = false
-                
-                let errorMsg = Message(content: "❌ 处理失败: \(error.localizedDescription)", isUser: false)
-                addMessage(errorMsg)
+                print("Video processing failed: \(error)")
+                await MainActor.run {
+                    errorMessage = "处理失败: \(error.localizedDescription)"
+                    updateStage(.failed, progress: 0, message: "失败: \(error.localizedDescription)")
+                    
+                    // Update bot message
+                    updateLastMessage("❌ 处理失败: \(error.localizedDescription)")
+                    isProcessing = false
+                }
             }
         }
+    }
+    
+    // MARK: - Remote Analysis Logic
+    
+    private func startRemoteAnalysis(videoURL: String, audioURL: String) async {
+        do {
+            // 1. Create Task
+            await MainActor.run {
+                updateStage(.creatingTask, progress: 0.55, message: "正在创建云端任务...")
+            }
+            
+            let entryId = try await APIService.shared.createTask()
+            print("[Task] Created entryId: \(entryId)")
+            
+            // 2. Parse Audio
+            await MainActor.run {
+                updateStage(.audioProcessing, progress: 0.6, message: "正在提交音频解析...")
+            }
+            
+            try await APIService.shared.parseAudio(entryId: entryId, audioUrl: audioURL)
+            
+            // Poll for Audio Status: Wait for "audio_done"
+            // 注意：checkStatus 只是返回状态，真正的数据在 artifact 接口
+            _ = try await pollForStatus(entryId: entryId, targetStatus: "audio_done")
+            
+            // Get Audio Artifact
+            let audioArtifact = try await APIService.shared.getArtifact(entryId: entryId, track: "audio")
+            // 修正字段名：从 "text" 改为 "data"
+            guard let transcript = audioArtifact["data"] as? String else {
+                // 如果没有 data 字段，尝试打印整个 artifact 以排查
+                print("[Task] Audio Artifact: \(audioArtifact)")
+                throw NSError(domain: "ChatViewModel", code: -1, userInfo: [NSLocalizedDescriptionKey: "音频转录结果为空"])
+            }
+            
+            print("[Task] Audio Transcript: \(transcript.prefix(50))...")
+            
+            // 3. Parse Video
+            await MainActor.run {
+                updateStage(.videoProcessing, progress: 0.75, message: "正在提交视频分析...")
+            }
+            
+            try await APIService.shared.parseVideo(entryId: entryId, videoUrl: videoURL, transcriptText: transcript)
+            
+            // Poll for Video Status: Wait for "video_done"
+            _ = try await pollForStatus(entryId: entryId, targetStatus: "video_done")
+            
+            // Get Video Artifact (This contains the final steps data now)
+            let videoArtifact = try await APIService.shared.getArtifact(entryId: entryId, track: "video")
+            print("[Task] Video Artifact retrieved")
+            
+            // 5. Completion (Skip steps generation phase)
+            await MainActor.run {
+                updateStage(.completed, progress: 1.0, message: "所有处理完成！")
+                
+                let resultMessage = """
+                ✅ 处理完成
+                
+                任务 ID: \(entryId)
+                
+                📝 转录摘要:
+                \(transcript.prefix(100))...
+                
+                (详细步骤已生成)
+                """
+                updateLastMessage(resultMessage)
+                isProcessing = false
+                
+                print("Video Artifact: \(videoArtifact)")
+
+                // Handle generated steps from video artifact
+                // Note: The structure is inside "data" -> { ... } which matches the schema
+                if let stepsData = videoArtifact["data"] as? [String: Any],
+                   let stepsArray = stepsData["steps"] as? [[String: Any]] {
+                    
+                    // Create Skill
+                    let skillName = (stepsData["name"] as? String) ?? "New Skill"
+                    let skillDesc = (stepsData["description"] as? String) ?? "Generated from video analysis"
+                    let software = (stepsData["software"] as? String) ?? "Unknown"
+                    
+                    let newSkill = Skill(
+                        name: skillName,
+                        software: software,
+                        description: skillDesc,
+                        sourceType: .videoAnalysis,
+                        steps: []
+                    )
+                    
+                    // Parse Steps
+                    for stepDict in stepsArray {
+                        let instruction = (stepDict["instruction"] as? String) ?? ""
+                        let actionTypeStr = (stepDict["action_type"] as? String) ?? "click"
+                        let targetDict = stepDict["target"] as? [String: Any]
+                        let targetName = (targetDict?["name"] as? String) ?? ""
+                        let targetTypeStr = (targetDict?["type"] as? String) ?? "button"
+                        
+                        // Parse Locators
+                        var locators: [Locator] = []
+                        if let locatorsArray = targetDict?["locators"] as? [[String: Any]] {
+                            for locDict in locatorsArray {
+                                if let methodRaw = locDict["method"] as? String,
+                                   let value = locDict["value"] as? String,
+                                   let method = LocatorMethod(rawValue: methodRaw) {
+                                    locators.append(Locator(method: method, value: AnyCodable(value), priority: (locDict["priority"] as? Int) ?? 1))
+                                }
+                            }
+                        }
+                        
+                        _ = Target(
+                            targetType: TargetType(rawValue: targetTypeStr) ?? .button,
+                            name: targetName,
+                            locators: locators
+                        )
+                        
+                        let step = SkillStep(
+                            stepId: (stepDict["step_id"] as? Int) ?? 0,
+                            actionType: ActionType(rawValue: actionTypeStr) ?? .click,
+                            targetName: targetName,
+                            targetType: TargetType(rawValue: targetTypeStr) ?? .button,
+                            instruction: instruction,
+                            waitAfter: (stepDict["wait_after"] as? Double) ?? 0.0,
+                            confidence: (stepDict["confidence"] as? Double) ?? 1.0
+                        )
+                        
+                        newSkill.steps.append(step)
+                    }
+                    
+                    // Save to Database
+                    if let context = modelContext {
+                        context.insert(newSkill)
+                        try? context.save()
+                        print("Skill saved: \(newSkill.name) with \(newSkill.steps.count) steps")
+                        
+                        // Set current skill to show card
+                        currentSkill = newSkill
+                    }
+                } else {
+                    print("Failed to parse video artifact data")
+                }
+            }
+            
+        } catch {
+            print("Remote analysis failed: \(error)")
+            await MainActor.run {
+                errorMessage = "分析失败: \(error.localizedDescription)"
+                updateStage(.failed, progress: 0, message: "分析失败: \(error.localizedDescription)")
+                updateLastMessage("❌ 分析失败: \(error.localizedDescription)")
+                isProcessing = false
+            }
+        }
+    }
+    
+    /// 轮询直到 status 字段变为 targetStatus
+    private func pollForStatus(entryId: String, targetStatus: String) async throws -> [String: Any] {
+        let maxRetries = 100 // 100 times * 2s = ~3.3 minutes max
+        
+        for i in 0..<maxRetries {
+            // Check Status
+            let result = try await APIService.shared.checkStatus(entryId: entryId)
+            
+            // Print status for debugging
+            print("[Poll] Status Check (\(i)): \(result)")
+            
+            if let status = result["status"] as? String {
+                if status == targetStatus {
+                    return result
+                } else if ["failed", "error"].contains(status.lowercased()) {
+                    throw NSError(domain: "ChatViewModel", code: -1, userInfo: [NSLocalizedDescriptionKey: "任务失败: \(status)"])
+                }
+            }
+            
+            // Wait before next poll
+            try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+        }
+        
+        throw NSError(domain: "ChatViewModel", code: -1, userInfo: [NSLocalizedDescriptionKey: "操作超时: 等待 \(targetStatus)"])
     }
     
     private func parseVideo(url: String) {
@@ -285,250 +458,51 @@ class ChatViewModel: ObservableObject {
         errorMessage = nil
         initializeStageDetails()
         
-        let botMessage = Message(content: "正在解析视频...", isUser: false)
+        let botMessage = Message(content: "正在解析视频... (逻辑已移除)", isUser: false)
         addMessage(botMessage)
         
+        // Mock completion
         Task {
-            do {
-                // Step 1: Download video
-                updateStage(.downloading, progress: 0, message: "正在下载视频...")
-                let videoPath = try await videoDownloader.download(url: url) { progress in
-                    Task { @MainActor in
-                        self.updateStage(.downloading, progress: progress * 15, message: "下载中 \(Int(progress * 100))%")
-                    }
-                }
-                markStageCompleted(.downloading)
-                
-                // Step 2: Extract audio and process video with ffmpeg
-                updateStage(.extractingAudio, progress: 15, message: "正在使用 ffmpeg 分离音视频...")
-                let (audioPath, processedVideoPath, guid) = try await videoDownloader.extractAudioAndProcessVideo(from: videoPath)
-                markStageCompleted(.extractingAudio)
-                
-                // Step 3: Upload to S3
-                updateStage(.uploading, progress: 20, message: "正在上传文件...")
-                let dirLocation = "skillflow/\(guid)/"
-                
-                let videoData = try Data(contentsOf: processedVideoPath)
-                let audioData = try Data(contentsOf: audioPath)
-                
-                let videoS3Key = try await s3Uploader.upload(
-                    data: videoData,
-                    key: "\(dirLocation)\(guid).mp4",
-                    contentType: "video/mp4"
-                ) { progress in
-                    Task { @MainActor in
-                        self.updateStage(.uploading, progress: 20 + progress * 5, message: "上传视频 \(Int(progress * 100))%")
-                    }
-                }
-                
-                let audioS3Key = try await s3Uploader.upload(
-                    data: audioData,
-                    key: "\(dirLocation)\(guid).mp3",
-                    contentType: "audio/mpeg"
-                ) { progress in
-                    Task { @MainActor in
-                        self.updateStage(.uploading, progress: 25 + progress * 5, message: "上传音频 \(Int(progress * 100))%")
-                    }
-                }
-                markStageCompleted(.uploading)
-                
-                // Step 4: Create task
-                updateStage(.creatingTask, progress: 30, message: "正在创建任务...")
-                let entryId = try await apiService.createTask()
-                currentEntryId = entryId
-                markStageCompleted(.creatingTask)
-                
-                // Step 5: Parse audio
-                updateStage(.audioProcessing, progress: 35, message: "正在提交音频解析...")
-                try await apiService.parseAudio(entryId: entryId, audioUrl: audioS3Key)
-                
-                updateStage(.audioProcessing, progress: 40, message: "正在等待音频转录...")
-                let transcriptText = try await pollForAudio(entryId: entryId)
-                markStageCompleted(.audioProcessing)
-                
-                // Step 6: Parse video
-                updateStage(.videoProcessing, progress: 55, message: "正在提交视频分析...")
-                try await apiService.parseVideo(
-                    entryId: entryId,
-                    videoUrl: videoS3Key,
-                    transcriptText: transcriptText
-                )
-                
-                updateStage(.videoProcessing, progress: 60, message: "正在等待视频分析...")
-                _ = try await pollForVideo(entryId: entryId)
-                markStageCompleted(.videoProcessing)
-                
-                // Step 7: Generate steps
-                updateStage(.stepsGenerating, progress: 80, message: "正在生成操作步骤...")
-                let skill = try await pollForSteps(entryId: entryId)
-                markStageCompleted(.stepsGenerating)
-                
-                // Step 8: Complete
-                updateStage(.completed, progress: 100, message: "视频解析完成！技能已生成：\(skill.name)")
-                markStageCompleted(.completed)
-                
-                currentSkill = skill
-                saveSkill(skill)
-                
-                isProcessing = false
-                
-                // Clean up temporary files
-                try? FileManager.default.removeItem(at: videoPath)
-                try? FileManager.default.removeItem(at: audioPath)
-                
-            } catch {
-                await handleParseError(error)
-            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            isProcessing = false
+            let successMessage = Message(content: "✅ 模拟解析完成 (UI 演示)", isUser: false)
+            addMessage(successMessage)
         }
-    }
-    
-    // MARK: - Polling Methods
-    
-    private func pollForAudio(entryId: String) async throws -> String {
-        return try await pollingManager.pollForAudio(entryId: entryId) { status, attempt in
-            Task { @MainActor in
-                let progressValue = 40 + self.calculateStatusProgress(status) * 15
-                self.updateStage(.audioProcessing, progress: progressValue, message: "音频转录中... (\(status.rawValue)) [尝试 \(attempt)]")
-            }
-        }
-    }
-    
-    private func pollForVideo(entryId: String) async throws -> VideoAnalysisData {
-        return try await pollingManager.pollForVideo(entryId: entryId) { status, attempt in
-            Task { @MainActor in
-                let progressValue = 60 + self.calculateStatusProgress(status) * 20
-                self.updateStage(.videoProcessing, progress: progressValue, message: "视频分析中... (\(status.rawValue)) [尝试 \(attempt)]")
-            }
-        }
-    }
-    
-    private func pollForSteps(entryId: String) async throws -> Skill {
-        return try await pollingManager.pollForSteps(entryId: entryId) { status, attempt in
-            Task { @MainActor in
-                let progressValue = 80 + self.calculateStatusProgress(status) * 20
-                self.updateStage(.stepsGenerating, progress: progressValue, message: "生成步骤中... (\(status.rawValue)) [尝试 \(attempt)]")
-            }
-        }
-    }
-    
-    private func calculateStatusProgress(_ status: TaskStatus) -> Double {
-        // Simple progress estimation based on status
-        switch status {
-        case .created:
-            return 0.0
-        case .processing:
-            return 0.5
-        case .audioDone, .videoDone, .finished:
-            return 1.0
-        case .failed:
-            return 0.0
-        }
-    }
-    
-    // MARK: - Error Handling
-    
-    private func handleParseError(_ error: Error) async {
-        isProcessing = false
-        
-        let errorMsg: String
-        if let seedoError = error as? SEEDOError {
-            errorMsg = seedoError.localizedDescription
-            
-            // Mark the appropriate stage as failed
-            switch seedoError {
-            case .uploadFailed:
-                markStageFailed(.uploading, error: errorMsg)
-            case .taskCreationFailed:
-                markStageFailed(.creatingTask, error: errorMsg)
-            case .audioParseFailed:
-                markStageFailed(.audioProcessing, error: errorMsg)
-            case .videoParseFailed:
-                markStageFailed(.videoProcessing, error: errorMsg)
-            case .stepGenerationFailed:
-                markStageFailed(.stepsGenerating, error: errorMsg)
-            case .pollingTimeout:
-                markStageFailed(currentStage, error: errorMsg)
-            case .authenticationFailed, .tokenExpired:
-                markStageFailed(currentStage, error: errorMsg)
-                // Prompt user to re-login
-                NotificationCenter.default.post(name: .authenticationRequired, object: nil)
-            default:
-                markStageFailed(currentStage, error: errorMsg)
-            }
-        } else {
-            errorMsg = "解析失败: \(error.localizedDescription)"
-            markStageFailed(currentStage, error: errorMsg)
-        }
-        
-        updateLastMessage(errorMsg)
-        currentStage = .failed
     }
     
     func retryParsing() {
-        guard let lastVideoURL = messages.last(where: { isVideoURL($0.content) })?.content else {
-            return
-        }
-        parseVideo(url: lastVideoURL)
-    }
-    
-    private func handleSkillInvocation(_ input: String) {
-        // Extract skill name from @mention
-        let components = input.components(separatedBy: "@")
-        guard components.count > 1 else {
-            addMessage(Message(content: "未找到技能引用", isUser: false))
-            return
-        }
-        
-        let skillName = components[1].components(separatedBy: " ").first ?? ""
-        
-        // Find skill in database
-        guard let context = modelContext else { return }
-        
-        let descriptor = FetchDescriptor<Skill>(
-            predicate: #Predicate { $0.name.contains(skillName) }
-        )
-        
-        do {
-            let skills = try context.fetch(descriptor)
-            
-            if let skill = skills.first {
-                currentSkill = skill
-                addMessage(Message(content: "准备执行技能：\(skill.name)", isUser: false))
-                
-                // Show execution options
-                NotificationCenter.default.post(
-                    name: .showExecutionOptions,
-                    object: nil,
-                    userInfo: ["skill": skill]
-                )
-            } else {
-                addMessage(Message(content: "未找到技能：\(skillName)", isUser: false))
-            }
-        } catch {
-            addMessage(Message(content: "查询技能失败: \(error.localizedDescription)", isUser: false))
-        }
+        print("Retry parsing (Logic removed)")
     }
     
     private func handleRegularChat(_ input: String) {
-        // Simple response for now
-        let response = generateResponse(for: input)
-        addMessage(Message(content: response, isUser: false))
-    }
-    
-    private func generateResponse(for input: String) -> String {
-        let lowercased = input.lowercased()
+        // Show "thinking" state
+        isProcessing = true
         
-        if lowercased.contains("帮助") || lowercased.contains("help") {
-            return """
-            我可以帮你：
-            1. 解析视频教程 - 直接粘贴视频链接
-            2. 执行技能 - 使用 @技能名 调用
-            3. 管理技能库 - 点击右侧技能库按钮
-            """
-        } else if lowercased.contains("技能") {
-            return "你可以通过粘贴视频链接来创建新技能，或使用 @技能名 来调用已保存的技能。"
-        } else {
-            return "我是 SkillFlow 助手，可以帮你解析视频教程并执行操作。试试粘贴一个视频链接吧！"
+        // Add a placeholder bot message
+        let botMessage = Message(content: "...", isUser: false)
+        let tempId = botMessage.id
+        addMessage(botMessage)
+        
+        Task {
+            await AssistantService.shared.handleUserMessage(text: input, history: messages) { [weak self] responseText, isComplete in
+                Task { @MainActor in
+                    guard let self = self else { return }
+                    
+                    // Find and update the placeholder message
+                    if let index = self.messages.firstIndex(where: { $0.id == tempId }) {
+                        self.messages[index].content = responseText
+                        
+                        // Save to DB
+                        if let context = self.modelContext {
+                            try? context.save()
+                        }
+                    }
+                    
+                    if isComplete {
+                        self.isProcessing = false
+                    }
+                }
+            }
         }
     }
     
@@ -550,12 +524,6 @@ class ChatViewModel: ObservableObject {
         if let context = modelContext {
             try? context.save()
         }
-    }
-    
-    private func saveSkill(_ skill: Skill) {
-        guard let context = modelContext else { return }
-        context.insert(skill)
-        try? context.save()
     }
     
     private func isVideoURL(_ text: String) -> Bool {

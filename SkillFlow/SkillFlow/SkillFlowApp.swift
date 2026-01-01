@@ -22,11 +22,21 @@ struct SkillFlowApp: App {
         .modelContainer(appDelegate.sharedModelContainer)
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 0, height: 0)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("打开调试页面") {
+                    print("🔍 Menu Item Clicked")
+                    // Directly use the appDelegate property injected by SwiftUI
+                    appDelegate.openDebugWindow()
+                }
+            }
+        }
     }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var floatingWindow: NSWindow?
+    var debugWindow: NSWindow?
     var statusItem: NSStatusItem?
     
     // Lazy initialization for better startup performance
@@ -48,12 +58,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusBar()
-        registerHotKey()
         createFloatingWindow()
     }
     
     func applicationWillTerminate(_ notification: Notification) {
-        HotKeyManager.shared.unregisterHotKey()
+        // Cleanup
     }
     
     // MARK: - Status Bar
@@ -144,14 +153,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
     }
+
+    // MARK: - Debug Window
+    
+    @MainActor
+    func openDebugWindow() {
+        print("🔍 openDebugWindow called")
+        if debugWindow == nil {
+            print("🔍 Creating new debug window")
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 400, height: 600),
+                styleMask: [.titled, .closable, .resizable, .miniaturizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Input Control Debug"
+            window.center()
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: InputControlDebugView())
+            self.debugWindow = window
+        } else {
+            print("🔍 Using existing debug window")
+        }
+        
+        debugWindow?.makeKeyAndOrderFront(nil)
+        debugWindow?.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        print("🔍 Debug window ordered front")
+    }
     
     // MARK: - HotKey
     
-    private func registerHotKey() {
-        HotKeyManager.shared.registerHotKey { [weak self] in
-            self?.toggleFloatingWindow()
-        }
-    }
+    // HotKey functionality removed
+
 }
 
 // MARK: - Custom Floating Panel

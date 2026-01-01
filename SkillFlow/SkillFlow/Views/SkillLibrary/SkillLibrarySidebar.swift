@@ -11,6 +11,7 @@ import SwiftData
 struct SkillLibrarySidebar: View {
     @StateObject private var viewModel = SkillLibraryViewModel()
     @Environment(\.modelContext) private var modelContext
+    @Query(sort: \Skill.createdAt, order: .reverse) private var allSkills: [Skill]
     @Binding var isShowing: Bool
     
     var body: some View {
@@ -38,9 +39,6 @@ struct SkillLibrarySidebar: View {
                 
                 TextField("搜索技能...", text: $viewModel.searchText)
                     .textFieldStyle(.plain)
-                    .onChange(of: viewModel.searchText) { _, _ in
-                        viewModel.loadSkills()
-                    }
                 
                 if !viewModel.searchText.isEmpty {
                     Button(action: { viewModel.searchText = "" }) {
@@ -62,7 +60,6 @@ struct SkillLibrarySidebar: View {
                     ForEach(viewModel.categories, id: \.self) { category in
                         Button(action: {
                             viewModel.selectedCategory = category
-                            viewModel.loadSkills()
                         }) {
                             Text(category)
                                 .font(.caption)
@@ -90,17 +87,25 @@ struct SkillLibrarySidebar: View {
             // Skills List
             ScrollView {
                 LazyVStack(spacing: 8) {
-                    ForEach(viewModel.filteredSkills) { skill in
-                        SkillListItem(skill: skill) {
-                            // Insert skill reference into chat
-                            NotificationCenter.default.post(
-                                name: .insertSkillReference,
-                                object: nil,
-                                userInfo: ["skill": skill]
-                            )
-                            isShowing = false
-                        } onDelete: {
-                            viewModel.deleteSkill(skill)
+                    let displayedSkills = viewModel.filterSkills(allSkills)
+                    
+                    if displayedSkills.isEmpty {
+                        Text(allSkills.isEmpty ? "暂无技能" : "无匹配技能")
+                            .foregroundColor(.secondary)
+                            .padding(.top, 20)
+                    } else {
+                        ForEach(displayedSkills) { skill in
+                            SkillListItem(skill: skill) {
+                                // Insert skill reference into chat
+                                NotificationCenter.default.post(
+                                    name: .insertSkillReference,
+                                    object: nil,
+                                    userInfo: ["skill": skill]
+                                )
+                                isShowing = false
+                            } onDelete: {
+                                viewModel.deleteSkill(skill)
+                            }
                         }
                     }
                 }
@@ -111,7 +116,7 @@ struct SkillLibrarySidebar: View {
             
             // Footer
             HStack {
-                Text("\(viewModel.skills.count) 个技能")
+                Text("\(allSkills.count) 个技能")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -123,8 +128,11 @@ struct SkillLibrarySidebar: View {
                             Text(option.rawValue).tag(option)
                         }
                     }
-                    .onChange(of: viewModel.sortBy) { _, _ in
-                        viewModel.loadSkills()
+                    
+                    Divider()
+                    
+                    Button("添加测试数据") {
+                        viewModel.addSampleData()
                     }
                 } label: {
                     Image(systemName: "arrow.up.arrow.down")
@@ -173,7 +181,9 @@ struct SkillListItem: View {
                         Text("•")
                             .foregroundColor(.secondary)
                         
-                        Text("\(skill.totalSteps) 步骤")
+                        // Try to get step count from packageData first, else fallback to steps count
+                        let stepCount = skill.getPackage()?.steps.count ?? skill.totalSteps
+                        Text("\(stepCount) 步骤")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }

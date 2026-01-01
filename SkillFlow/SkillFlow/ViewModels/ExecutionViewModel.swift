@@ -20,20 +20,9 @@ class ExecutionViewModel: ObservableObject {
     @Published var highlightRect: CGRect?
     @Published var errorMessage: String?
     
-    private let executionEngine = ExecutionEngine.shared
     private var currentSkill: Skill?
     
     init() {
-        // Observe execution engine changes
-        executionEngine.$isExecuting
-            .assign(to: &$isExecuting)
-        
-        executionEngine.$currentStep
-            .assign(to: &$currentStep)
-        
-        executionEngine.$executionStatus
-            .assign(to: &$executionStatus)
-        
         // Listen for highlight notifications
         NotificationCenter.default.addObserver(
             forName: .highlightElement,
@@ -53,6 +42,45 @@ class ExecutionViewModel: ObservableObject {
         }
     }
     
+    // MARK: - VLM Automation
+    
+    /// 开始 VLM 驱动的自动化任务
+    /// - Parameter goal: 任务目标
+    func startVLMAutomation(goal: String) {
+        guard !isExecuting else { return }
+        
+        // 1. 检查权限
+        guard ScreenCaptureService.shared.checkScreenRecordingPermission() else {
+            errorMessage = "Please grant Screen Recording permission in System Settings."
+            ScreenCaptureService.shared.requestScreenRecordingPermission()
+            return
+        }
+        
+        // 初始化状态
+        isExecuting = true
+        executionStatus = .running
+        executionMode = .auto
+        currentInstruction = "Initializing VLM Automation..."
+        errorMessage = nil
+        
+        Task {
+            // 注意：新的架构下，AssistantService 负责整个流程
+            // 这里我们只是作为一个 UI 状态的代理
+            
+            await AssistantService.shared.handleUserMessage(text: goal, history: []) { [weak self] status, isComplete in
+                Task { @MainActor in
+                    self?.currentInstruction = status
+                    
+                    if isComplete {
+                        self?.stopExecution()
+                    }
+                }
+            }
+        }
+    }
+    
+    // (runVLMLoop 已被废弃，由 AssistantService 接管)
+
     // MARK: - Execute Skill
     
     func executeSkill(_ skill: Skill, mode: ExecutionMode) {
@@ -61,49 +89,39 @@ class ExecutionViewModel: ObservableObject {
         self.executionMode = mode
         self.errorMessage = nil
         
-        executionEngine.executeSkill(
-            skill,
-            mode: mode,
-            onStepComplete: { [weak self] step in
-                self?.onStepComplete(step)
-            },
-            onComplete: { [weak self] success, error in
-                self?.onExecutionComplete(success: success, error: error)
-            }
-        )
+        self.isExecuting = true
+        self.executionStatus = .running
+        
+        print("Execute skill: \(skill.name) in \(mode) mode (Logic removed)")
     }
     
     func proceedToNextStep() {
-        executionEngine.proceedToNextStep()
+        if currentStep < totalSteps {
+            currentStep += 1
+            print("Proceed to step \(currentStep)")
+        } else {
+            executionStatus = .completed
+            isExecuting = false
+            print("Execution completed")
+        }
     }
     
     func pauseExecution() {
-        executionEngine.pauseExecution()
+        executionStatus = .paused
     }
     
     func resumeExecution() {
-        executionEngine.resumeExecution()
+        executionStatus = .running
     }
     
     func stopExecution() {
-        executionEngine.stopExecution()
+        executionStatus = .idle
+        isExecuting = false
+        currentStep = 0
+        highlightRect = nil
     }
     
     // MARK: - Callbacks
-    
-    private func onStepComplete(_ step: Int) {
-        // Update UI or log
-        print("Step \(step + 1) completed")
-    }
-    
-    private func onExecutionComplete(success: Bool, error: String?) {
-        if success {
-            print("Execution completed successfully")
-        } else {
-            errorMessage = error ?? "Unknown error"
-            print("Execution failed: \(errorMessage ?? "")")
-        }
-    }
     
     private func handleHighlight(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
@@ -139,4 +157,27 @@ class ExecutionViewModel: ObservableObject {
     var canResume: Bool {
         isExecuting && executionStatus == .paused
     }
+}
+
+// MARK: - Enums
+
+enum ExecutionMode: String {
+    case guide
+    case auto
+}
+
+enum ExecutionStatus: String {
+    case idle
+    case running
+    case paused
+    case waitingForUser
+    case completed
+    case failed
+}
+
+// MARK: - Notifications
+
+extension Notification.Name {
+    static let highlightElement = Notification.Name("highlightElement")
+    static let hideHighlight = Notification.Name("hideHighlight")
 }
