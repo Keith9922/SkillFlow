@@ -1,0 +1,99 @@
+{
+  "version": "1.0",
+  "package": {
+    "name": "PS 证件照换底色 (坐标版)",
+    "createdAt": "2024-01-02T12:00:00Z",
+    "description": "基于固定坐标的 Photoshop 背景替换流程",
+    "author": "SkillFlow User",
+    "tags": ["图像处理", "Photoshop", "坐标"]
+  },
+  "app": {
+    "name": "Photoshop",
+    "minVersion": "2023",
+    "maxVersion": null
+  },
+  "steps": [
+    {
+      "op": "click",
+      "name": "点击图层面板区域",
+      "target": {
+        "strategy": "template",
+        "template": "coordinate_only"
+      },
+      "params": {
+          "offset": { "dx": 1244, "dy": 731 }
+      }
+    },
+    {
+      "op": "click",
+      "name": "点击选择菜单",
+      "target": {
+        "strategy": "template",
+        "template": "coordinate_only"
+      },
+      "params": {
+          "offset": { "dx": 437, "dy": 21 }
+      }
+    },
+    {
+      "op": "click",
+      "name": "点击主体",
+      "target": {
+        "strategy": "template",
+        "template": "coordinate_only"
+      },
+      "params": {
+          "offset": { "dx": 535, "dy": 250 }
+      }
+    },
+    {
+      "op": "wait",
+      "name": "等待处理",
+      "until": {
+          "strategy": "template",
+          "template": "time_only"
+      },
+      "params": {
+          "mode": "appear"
+      }
+    },
+    {
+      "op": "click",
+      "name": "点击移除背景/其他工具",
+      "target": {
+        "strategy": "template",
+        "template": "coordinate_only"
+      },
+      "params": {
+          "offset": { "dx": 611, "dy": 836 }
+      }
+    },
+    {
+      "op": "click",
+      "name": "点击确认/应用",
+      "target": {
+        "strategy": "template",
+        "template": "coordinate_only"
+      },
+      "params": {
+          "offset": { "dx": 686, "dy": 835 }
+      }
+    },
+    {
+      "op": "click",
+      "name": "点击填充/完成",
+      "target": {
+        "strategy": "template",
+        "template": "coordinate_only"
+      },
+      "params": {
+          "offset": { "dx": 683, "dy": 774 }
+      }
+    },
+    {
+      "op": "hotkey",
+      "name": "取消选择",
+      "keys": ["command", "d"]
+    }
+  ]
+}

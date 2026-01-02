@@ -224,9 +224,11 @@ class APIService {
         
         AVAILABLE TOOLS (JSON Format):
         - move_mouse: {"action": "move_mouse", "params": {"x": 0.5, "y": 0.5, "duration": 500}} (duration in ms, default 500)
-        - click: {"action": "click", "params": {"button": "left"}} (options: left, right, center)
-          * IMPORTANT: For double clicks, issue two "click" actions with a "delay" of 50ms in between.
-        - mouse_down/up: {"action": "mouse_down", "params": {"button": "left"}}
+        - click: {"action": "click", "params": {"button": "left", "x": 0.5, "y": 0.5}} (options: left, right, center)
+          * IMPORTANT: ALWAYS include "x" and "y" coordinates for clicks to ensure the mouse moves to the target first.
+          * For double clicks, issue two "click" actions with a "delay" of 50ms in between.
+        - mouse_down/up: {"action": "mouse_down", "params": {"button": "left", "x": 0.5, "y": 0.5}}
+          * ALWAYS include "x" and "y" coordinates.
         - paste_text: {"action": "paste_text", "params": {"text": "hello world"}}
           * PREFERRED for typing text, especially long text or Chinese. Ensure the text field is focused (clicked) before pasting.
         - key_press: {"action": "key_press", "params": {"key": "enter"}} (keys: enter, space, escape, command, shift, etc.)
@@ -437,6 +439,7 @@ class APIService {
         AVAILABLE TOOLS:
         - move_mouse, click, mouse_down/up, paste_text, key_press, delay, finish
         (Same format as standard automation)
+        * IMPORTANT: ALWAYS include "x" and "y" coordinates for 'click', 'mouse_down', and 'mouse_up' actions to ensure the mouse moves to the target first.
         
         OUTPUT FORMAT:
         JSON object with "thought" and "tasks".

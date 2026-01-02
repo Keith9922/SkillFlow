@@ -53,7 +53,7 @@ class AssistantService {
     private func performAutomation(intent: String, onProgress: @escaping (String) -> Void, onComplete: @escaping (String) -> Void) async throws {
         var currentIntent = intent
         var stepCount = 0
-        let maxSteps = 5 // 防止无限循环
+        let maxSteps = 20 // 防止无限循环
         
         while stepCount < maxSteps {
             stepCount += 1
@@ -151,8 +151,10 @@ class AssistantService {
         
         onProgress("🚀 开始执行技能: \(skill.name)\n包含 \(skill.steps.count) 个步骤")
         
-        for (index, step) in skill.steps.enumerated() {
-            onProgress("📍 [步骤 \(index + 1)/\(skill.steps.count)] \(step.instruction)")
+        let sortedSteps = skill.steps.sorted { $0.stepId < $1.stepId }
+        
+        for (index, step) in sortedSteps.enumerated() {
+            onProgress("📍 [步骤 \(index + 1)/\(sortedSteps.count)] \(step.instruction)")
             
             // 1. 截图
             guard let screenData = await ScreenCaptureService.shared.captureMainScreen() else {
